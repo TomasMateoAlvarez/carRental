@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+
+# IDE files
+.idea
+.vscode
+*.iml
+*.iws
+*.ipr
+
+# Build outputs
+target/
+build/
+out/
+
+# Environment files
+.env
+.env.local
+.env.development
+.env.production
+
+# Logs
+logs/
+*.log
+
+# Documentation
+*.md
+!README.md
+
+# Docker files (except Dockerfile)
+docker-compose*.yml
+Dockerfile.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Test files
+src/test/
