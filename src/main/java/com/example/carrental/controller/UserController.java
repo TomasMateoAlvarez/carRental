@@ -1,12 +1,12 @@
 package com.example.carrental.controller;
-import com.example.carrental.model.UserModel;
+import com.example.carrental.model.User;
 import com.example.carrental.services.UserService;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+
 @RestController
 @RequestMapping("/users")
-
-
+@CrossOrigin(origins = "http://localhost:5173")
 public class UserController {
 
     private final UserService userService;
@@ -16,12 +16,12 @@ public class UserController {
     }
 
     @GetMapping
-    public List<UserModel> getAllUsers() {
+    public List<User> getAllUsers() {
         return userService.getallUsers();
     }
 
     @PostMapping
-    public UserModel createUser(@RequestBody UserModel user){
+    public User createUser(@RequestBody User user){
         return userService.saveUser(user);
     }
 
@@ -29,5 +29,4 @@ public class UserController {
     public void deleteUser(@PathVariable Long id){
         userService.deleteUser(id);
     }
-
 }

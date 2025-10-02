@@ -8,7 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.stereotype.Service;
 
-import java.security.Key;
+import javax.crypto.SecretKey;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
 @Service
 public class JwtService {
 
-    @Value("${JWT_SECRET:mySecretKey123456789012345678901234567890}")
+    @Value("${JWT_SECRET:bXlTZWNyZXRLZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkw}")
     private String secretKey;
 
     @Value("${JWT_EXPIRATION:86400000}") // 24 hours in milliseconds
@@ -98,10 +98,10 @@ public class JwtService {
     private Claims extractAllClaims(String token) {
         try {
             return Jwts
-                    .parserBuilder()
-                    .setSigningKey(getSignInKey())
+                    .parser()
+                    .verifyWith(getSignInKey())
                     .build()
-                    .parseClaimsJws(token)
+                    .parseSignedClaims(token)
                     .getBody();
         } catch (ExpiredJwtException e) {
             throw new JwtException("JWT token is expired", e);
@@ -116,7 +116,7 @@ public class JwtService {
         }
     }
 
-    private Key getSignInKey() {
+    private SecretKey getSignInKey() {
         byte[] keyBytes = Decoders.BASE64.decode(secretKey);
         return Keys.hmacShaKeyFor(keyBytes);
     }
@@ -156,10 +156,10 @@ public class JwtService {
 
     public boolean validateToken(String token) {
         try {
-            Jwts.parserBuilder()
-                    .setSigningKey(getSignInKey())
+            Jwts.parser()
+                    .verifyWith(getSignInKey())
                     .build()
-                    .parseClaimsJws(token);
+                    .parseSignedClaims(token);
             return true;
         } catch (JwtException | IllegalArgumentException e) {
             return false;
