@@ -62,4 +62,17 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
     List<Reservation> findActiveReservationsByVehicle(@Param("vehicle") VehicleModel vehicle);
 
     boolean existsByReservationCode(String reservationCode);
+
+    // Additional method for getting all reservations ordered by creation date
+    List<Reservation> findAllByOrderByCreatedAtDesc();
+
+    // Count reservations by status for dashboard KPIs
+    long countByStatus(ReservationStatus status);
+
+    // Additional methods for analytics and reporting
+    @Query("SELECT r FROM Reservation r WHERE r.tenant = :tenant " +
+           "AND DATE(r.startDate) BETWEEN :startDate AND :endDate")
+    List<Reservation> findByTenantAndDateRange(@Param("tenant") com.example.carrental.model.Tenant tenant,
+                                             @Param("startDate") LocalDate startDate,
+                                             @Param("endDate") LocalDate endDate);
 }

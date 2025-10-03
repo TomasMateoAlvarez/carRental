@@ -21,7 +21,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/reservations")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "http://localhost:5173")
+@CrossOrigin(origins = {"http://localhost:5173", "http://localhost:5174"})
 public class ReservationController {
 
     private final ReservationService reservationService;
@@ -156,6 +156,67 @@ public class ReservationController {
             log.error("Error fetching returns for date: {}", date, e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of("error", "Failed to fetch returns", "message", e.getMessage()));
+        }
+    }
+
+    // Additional endpoints for frontend compatibility
+    @GetMapping("/all")
+    public ResponseEntity<?> getAllReservations(Authentication authentication) {
+        try {
+            String username = authentication.getName();
+            List<ReservationResponseDTO> reservations = reservationService.getAllReservations();
+            return ResponseEntity.ok(reservations);
+        } catch (Exception e) {
+            log.error("Error fetching all reservations", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to fetch reservations", "message", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/my")
+    public ResponseEntity<?> getMyReservations(Authentication authentication) {
+        try {
+            String username = authentication.getName();
+            List<ReservationResponseDTO> reservations = reservationService.getUserReservations(username);
+            return ResponseEntity.ok(reservations);
+        } catch (Exception e) {
+            log.error("Error fetching user reservations for: {}", authentication.getName(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to fetch reservations", "message", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/{id}/status")
+    public ResponseEntity<?> updateReservationStatus(
+            @PathVariable Long id,
+            @RequestParam String status,
+            Authentication authentication) {
+        try {
+            ReservationStatus reservationStatus = ReservationStatus.valueOf(status.toUpperCase());
+            ReservationResponseDTO response = reservationService.updateReservationStatus(id, reservationStatus);
+            return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "Invalid status", "message", "Status must be one of: PENDING, CONFIRMED, IN_PROGRESS, COMPLETED, CANCELLED, NO_SHOW"));
+        } catch (Exception e) {
+            log.error("Error updating reservation status", e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "Failed to update reservation", "message", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> deleteReservation(
+            @PathVariable Long id,
+            Authentication authentication) {
+        try {
+            String username = authentication.getName();
+            reservationService.deleteReservation(id, username);
+            return ResponseEntity.ok(Map.of("message", "Reservation deleted successfully"));
+        } catch (Exception e) {
+            log.error("Error deleting reservation: {}", id, e);
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "Failed to delete reservation", "message", e.getMessage()));
         }
     }
 }

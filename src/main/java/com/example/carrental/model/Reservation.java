@@ -85,6 +85,11 @@ public class Reservation {
     @OneToOne(mappedBy = "reservation", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private Rental rental;
 
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_id")
+    private Tenant tenant;
+
     // Business logic methods
     public void calculateTotalAmount() {
         if (startDate != null && endDate != null && dailyRate != null) {

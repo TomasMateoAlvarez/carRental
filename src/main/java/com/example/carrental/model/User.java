@@ -61,6 +61,34 @@ public class User implements UserDetails {
     @Builder.Default
     private LocalDateTime updatedAt = LocalDateTime.now();
 
+    // Additional fields for notifications and multi-tenancy
+    @Column(name = "phone_number", length = 20)
+    private String phoneNumber;
+
+    @Column(name = "email_notifications_enabled")
+    @Builder.Default
+    private Boolean emailNotificationsEnabled = true;
+
+    @Column(name = "sms_notifications_enabled")
+    @Builder.Default
+    private Boolean smsNotificationsEnabled = true;
+
+    @Column(name = "push_notifications_enabled")
+    @Builder.Default
+    private Boolean pushNotificationsEnabled = true;
+
+    @Column(name = "device_token", length = 500)
+    private String deviceToken;
+
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_id")
+    private Tenant tenant;
+
+    // Stripe integration
+    @Column(name = "stripe_customer_id", length = 100)
+    private String stripeCustomerId;
+
     // Many-to-Many relationship with Role
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(
@@ -159,6 +187,19 @@ public class User implements UserDetails {
         return roles.stream()
                 .map(Role::getName)
                 .collect(Collectors.toList());
+    }
+
+    // Notification preference getters
+    public boolean isEmailNotificationsEnabled() {
+        return emailNotificationsEnabled != null ? emailNotificationsEnabled : true;
+    }
+
+    public boolean isSmsNotificationsEnabled() {
+        return smsNotificationsEnabled != null ? smsNotificationsEnabled : true;
+    }
+
+    public boolean isPushNotificationsEnabled() {
+        return pushNotificationsEnabled != null ? pushNotificationsEnabled : true;
     }
 
     @PreUpdate

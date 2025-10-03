@@ -257,4 +257,94 @@ public class ReservationService {
 
         return builder.build();
     }
+
+    // Additional methods for frontend compatibility
+    @Transactional(readOnly = true)
+    public List<ReservationResponseDTO> getAllReservations() {
+        List<Reservation> reservations = reservationRepository.findAllByOrderByCreatedAtDesc();
+        return reservations.stream()
+                .map(this::mapToResponseDTO)
+                .collect(Collectors.toList());
+    }
+
+    public ReservationResponseDTO updateReservationStatus(Long id, ReservationStatus status) {
+        log.info("Updating reservation {} to status {}", id, status);
+
+        Reservation reservation = reservationRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Reservation not found"));
+
+        // Validate status transition
+        validateStatusTransition(reservation.getStatus(), status);
+
+        // Update status
+        reservation.setStatus(status);
+
+        // Set specific timestamps based on status
+        switch (status) {
+            case CONFIRMED:
+                reservation.confirm();
+                break;
+            case CANCELLED:
+                reservation.cancel("Status updated by admin");
+                break;
+            default:
+                // For other statuses, just update
+                break;
+        }
+
+        reservation = reservationRepository.save(reservation);
+        log.info("Reservation {} status updated to {}", id, status);
+
+        return mapToResponseDTO(reservation);
+    }
+
+    public void deleteReservation(Long id, String username) {
+        log.info("Deleting reservation {} by user {}", id, username);
+
+        Reservation reservation = reservationRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Reservation not found"));
+
+        // Check authorization
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!reservation.getUser().equals(user) && !user.hasRole("ADMIN")) {
+            throw new RuntimeException("Access denied");
+        }
+
+        // Validate that reservation can be deleted
+        if (reservation.getStatus().isFinalState() && reservation.getStatus() != ReservationStatus.CANCELLED) {
+            throw new RuntimeException("Cannot delete reservation in status: " + reservation.getStatus());
+        }
+
+        reservationRepository.delete(reservation);
+        log.info("Reservation {} deleted successfully", id);
+    }
+
+    private void validateStatusTransition(ReservationStatus from, ReservationStatus to) {
+        // Define valid transitions
+        switch (from) {
+            case PENDING:
+                if (to != ReservationStatus.CONFIRMED && to != ReservationStatus.CANCELLED) {
+                    throw new RuntimeException("Invalid status transition from " + from + " to " + to);
+                }
+                break;
+            case CONFIRMED:
+                if (to != ReservationStatus.IN_PROGRESS && to != ReservationStatus.CANCELLED && to != ReservationStatus.NO_SHOW) {
+                    throw new RuntimeException("Invalid status transition from " + from + " to " + to);
+                }
+                break;
+            case IN_PROGRESS:
+                if (to != ReservationStatus.COMPLETED) {
+                    throw new RuntimeException("Invalid status transition from " + from + " to " + to);
+                }
+                break;
+            case COMPLETED:
+            case CANCELLED:
+            case NO_SHOW:
+                throw new RuntimeException("Cannot change status from final state: " + from);
+            default:
+                throw new RuntimeException("Unknown status: " + from);
+        }
+    }
 }

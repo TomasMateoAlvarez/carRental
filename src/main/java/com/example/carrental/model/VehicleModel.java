@@ -73,6 +73,11 @@ public class VehicleModel {
 
     private LocalDateTime nextMaintenanceDate;
 
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "tenant_id")
+    private Tenant tenant;
+
     // Business logic methods
     public boolean canChangeStatusTo(VehicleStatus newStatus) {
         return this.status.canTransitionTo(newStatus);

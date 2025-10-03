@@ -17,7 +17,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/v1/auth")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "http://localhost:5173") // Allow frontend
+@CrossOrigin(origins = {"http://localhost:5173", "http://localhost:5174"}) // Allow frontend
 public class AuthController {
 
     private final AuthService authService;
