@@ -6,6 +6,7 @@ import lombok.*;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "vehicles")
@@ -73,10 +74,17 @@ public class VehicleModel {
 
     private LocalDateTime nextMaintenanceDate;
 
-    // Multi-tenant relationship
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "tenant_id")
-    private Tenant tenant;
+    // Relationships for photos and maintenance
+    @OneToMany(mappedBy = "vehicle", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<VehiclePhoto> photos;
+
+    @OneToMany(mappedBy = "vehicle", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<MaintenanceRecord> maintenanceRecords;
+
+    // Multi-tenant relationship - DISABLED for core functionality
+    // @ManyToOne(fetch = FetchType.LAZY)
+    // @JoinColumn(name = "tenant_id")
+    // private Tenant tenant;
 
     // Business logic methods
     public boolean canChangeStatusTo(VehicleStatus newStatus) {

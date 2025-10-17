@@ -80,10 +80,10 @@ public class User implements UserDetails {
     @Column(name = "device_token", length = 500)
     private String deviceToken;
 
-    // Multi-tenant relationship
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "tenant_id")
-    private Tenant tenant;
+    // Multi-tenant relationship - DISABLED for core functionality
+    // @ManyToOne(fetch = FetchType.LAZY)
+    // @JoinColumn(name = "tenant_id")
+    // private Tenant tenant;
 
     // Stripe integration
     @Column(name = "stripe_customer_id", length = 100)

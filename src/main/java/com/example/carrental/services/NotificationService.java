@@ -1,338 +1,186 @@
 package com.example.carrental.services;
 
-import com.example.carrental.model.Payment;
-import com.example.carrental.model.Reservation;
+import com.example.carrental.model.Notification;
 import com.example.carrental.model.User;
-import com.example.carrental.enums.NotificationType;
+import com.example.carrental.model.VehicleModel;
+import com.example.carrental.repository.NotificationRepository;
+import com.example.carrental.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
-import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Async;
-import org.thymeleaf.TemplateEngine;
-import org.thymeleaf.context.Context;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
+import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
-@Slf4j
 public class NotificationService {
 
-    private final JavaMailSender mailSender;
-    private final TemplateEngine templateEngine;
-    private final SMSService smsService;
+    private final NotificationRepository notificationRepository;
+    private final UserRepository userRepository;
 
-    @Value("${app.mail.from:noreply@carrental.com}")
-    private String fromEmail;
+    @Transactional
+    public Notification createNotification(Long userId, String type, String title, String message,
+                                         String priority, String relatedEntityType, Long relatedEntityId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found with id: " + userId));
 
-    @Value("${app.name:CarRental SaaS}")
-    private String appName;
+        Notification notification = Notification.builder()
+            .user(user)
+            .type(type)
+            .title(title)
+            .message(message)
+            .priority(priority != null ? priority : "MEDIUM")
+            .relatedEntityType(relatedEntityType)
+            .relatedEntityId(relatedEntityId)
+            .isRead(false)
+            .build();
 
-    @Value("${app.url:https://carrental.com}")
-    private String appUrl;
+        Notification savedNotification = notificationRepository.save(notification);
+        log.info("Notification created for user {}: {}", user.getUsername(), title);
 
-    // Email Notifications
-    @Async
-    public CompletableFuture<Void> sendReservationConfirmation(Reservation reservation) {
-        try {
-            Context context = new Context();
-            context.setVariable("reservation", reservation);
-            context.setVariable("user", reservation.getUser());
-            context.setVariable("vehicle", reservation.getVehicle());
-            context.setVariable("appName", appName);
-            context.setVariable("appUrl", appUrl);
-
-            String htmlContent = templateEngine.process("email/reservation-confirmation", context);
-
-            sendEmail(
-                reservation.getUser().getEmail(),
-                "Confirmación de Reserva - " + reservation.getReservationCode(),
-                htmlContent
-            );
-
-            // Send SMS if user has phone
-            if (reservation.getUser().getPhoneNumber() != null) {
-                smsService.sendReservationConfirmation(reservation);
-            }
-
-            log.info("Sent reservation confirmation for {}", reservation.getReservationCode());
-        } catch (Exception e) {
-            log.error("Failed to send reservation confirmation", e);
-        }
-        return CompletableFuture.completedFuture(null);
+        return savedNotification;
     }
 
     @Async
-    public CompletableFuture<Void> sendPaymentConfirmation(Payment payment) {
-        try {
-            Context context = new Context();
-            context.setVariable("payment", payment);
-            context.setVariable("reservation", payment.getReservation());
-            context.setVariable("user", payment.getUser());
-            context.setVariable("appName", appName);
-            context.setVariable("appUrl", appUrl);
+    @Transactional
+    public void createMaintenanceAlert(VehicleModel vehicle, String reason, int currentMileage) {
+        // Find all admin and employee users to notify
+        List<User> adminUsers = userRepository.findByRoleName("ADMIN");
+        List<User> employeeUsers = userRepository.findByRoleName("EMPLOYEE");
 
-            String htmlContent = templateEngine.process("email/payment-confirmation", context);
+        String title = "🔧 Alerta de Mantenimiento - " + vehicle.getBrand() + " " + vehicle.getModel();
+        String message = String.format(
+            "El vehículo %s (%s) requiere mantenimiento.\n" +
+            "Kilometraje actual: %,d km\n" +
+            "Razón: %s\n" +
+            "Por favor, programa el mantenimiento lo antes posible.",
+            vehicle.getLicensePlate(),
+            vehicle.getBrand() + " " + vehicle.getModel(),
+            currentMileage,
+            reason
+        );
 
-            sendEmail(
-                payment.getUser().getEmail(),
-                "Confirmación de Pago - " + payment.getPaymentCode(),
-                htmlContent
-            );
-
-            log.info("Sent payment confirmation for {}", payment.getPaymentCode());
-        } catch (Exception e) {
-            log.error("Failed to send payment confirmation", e);
+        // Notify admins
+        for (User admin : adminUsers) {
+            createNotification(admin.getId(), "MAINTENANCE_DUE", title, message,
+                             "HIGH", "VEHICLE", vehicle.getId());
         }
-        return CompletableFuture.completedFuture(null);
+
+        // Notify employees
+        for (User employee : employeeUsers) {
+            createNotification(employee.getId(), "MAINTENANCE_DUE", title, message,
+                             "HIGH", "VEHICLE", vehicle.getId());
+        }
+
+        log.info("Maintenance alerts sent for vehicle: {} to {} users",
+                vehicle.getLicensePlate(), adminUsers.size() + employeeUsers.size());
     }
 
     @Async
-    public CompletableFuture<Void> sendRefundConfirmation(Payment payment, BigDecimal refundAmount) {
-        try {
-            Context context = new Context();
-            context.setVariable("payment", payment);
-            context.setVariable("refundAmount", refundAmount);
-            context.setVariable("user", payment.getUser());
-            context.setVariable("appName", appName);
+    @Transactional
+    public void createMaintenanceCompletedNotification(VehicleModel vehicle, String serviceProvider, String description) {
+        // Find all admin users to notify
+        List<User> adminUsers = userRepository.findByRoleName("ADMIN");
 
-            String htmlContent = templateEngine.process("email/refund-confirmation", context);
+        String title = "✅ Mantenimiento Completado - " + vehicle.getBrand() + " " + vehicle.getModel();
+        String message = String.format(
+            "El mantenimiento del vehículo %s (%s) ha sido completado.\n" +
+            "Proveedor de servicio: %s\n" +
+            "Descripción: %s\n" +
+            "El vehículo está listo para uso.",
+            vehicle.getLicensePlate(),
+            vehicle.getBrand() + " " + vehicle.getModel(),
+            serviceProvider,
+            description
+        );
 
-            sendEmail(
-                payment.getUser().getEmail(),
-                "Confirmación de Reembolso - " + payment.getPaymentCode(),
-                htmlContent
-            );
-
-            log.info("Sent refund confirmation for {} - Amount: {}", payment.getPaymentCode(), refundAmount);
-        } catch (Exception e) {
-            log.error("Failed to send refund confirmation", e);
+        for (User admin : adminUsers) {
+            createNotification(admin.getId(), "VEHICLE_STATUS", title, message,
+                             "MEDIUM", "VEHICLE", vehicle.getId());
         }
-        return CompletableFuture.completedFuture(null);
+
+        log.info("Maintenance completion notifications sent for vehicle: {}", vehicle.getLicensePlate());
     }
 
     @Async
-    public CompletableFuture<Void> sendReminderNotification(Reservation reservation, int hoursBeforePickup) {
-        try {
-            Context context = new Context();
-            context.setVariable("reservation", reservation);
-            context.setVariable("user", reservation.getUser());
-            context.setVariable("vehicle", reservation.getVehicle());
-            context.setVariable("hoursBeforePickup", hoursBeforePickup);
-            context.setVariable("appName", appName);
+    @Transactional
+    public void createVehicleStatusChangeNotification(VehicleModel vehicle, String oldStatus, String newStatus, Long changedByUserId) {
+        // Find all admin users to notify
+        List<User> adminUsers = userRepository.findByRoleName("ADMIN");
 
-            String htmlContent = templateEngine.process("email/pickup-reminder", context);
+        String title = "🚗 Estado de Vehículo Cambiado - " + vehicle.getBrand() + " " + vehicle.getModel();
+        String message = String.format(
+            "El estado del vehículo %s (%s) ha cambiado.\n" +
+            "Estado anterior: %s\n" +
+            "Estado nuevo: %s\n" +
+            "Cambiado por: Usuario ID %d",
+            vehicle.getLicensePlate(),
+            vehicle.getBrand() + " " + vehicle.getModel(),
+            oldStatus,
+            newStatus,
+            changedByUserId
+        );
 
-            sendEmail(
-                reservation.getUser().getEmail(),
-                "Recordatorio de Recogida - " + reservation.getReservationCode(),
-                htmlContent
-            );
-
-            // Send SMS reminder
-            if (reservation.getUser().getPhoneNumber() != null) {
-                smsService.sendPickupReminder(reservation, hoursBeforePickup);
-            }
-
-            log.info("Sent pickup reminder for {} - {} hours before",
-                    reservation.getReservationCode(), hoursBeforePickup);
-        } catch (Exception e) {
-            log.error("Failed to send pickup reminder", e);
+        for (User admin : adminUsers) {
+            createNotification(admin.getId(), "VEHICLE_STATUS", title, message,
+                             "LOW", "VEHICLE", vehicle.getId());
         }
-        return CompletableFuture.completedFuture(null);
     }
 
-    @Async
-    public CompletableFuture<Void> sendWelcomeEmail(User user) {
-        try {
-            Context context = new Context();
-            context.setVariable("user", user);
-            context.setVariable("appName", appName);
-            context.setVariable("appUrl", appUrl);
+    public List<Notification> getUserNotifications(Long userId) {
+        return notificationRepository.findByUserIdOrderByCreatedAtDesc(userId);
+    }
 
-            String htmlContent = templateEngine.process("email/welcome", context);
+    public List<Notification> getUnreadNotifications(Long userId) {
+        return notificationRepository.findByUserIdAndIsReadOrderByCreatedAtDesc(userId, false);
+    }
 
-            sendEmail(
-                user.getEmail(),
-                "¡Bienvenido a " + appName + "!",
-                htmlContent
-            );
+    public long getUnreadCount(Long userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        return notificationRepository.countUnreadNotificationsByUser(user);
+    }
 
-            log.info("Sent welcome email to {}", user.getEmail());
-        } catch (Exception e) {
-            log.error("Failed to send welcome email", e);
+    @Transactional
+    public void markAsRead(Long notificationId) {
+        Notification notification = notificationRepository.findById(notificationId)
+            .orElseThrow(() -> new RuntimeException("Notification not found"));
+
+        notification.markAsRead();
+        notificationRepository.save(notification);
+    }
+
+    @Transactional
+    public void markAllAsRead(Long userId) {
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("User not found"));
+
+        notificationRepository.markAllAsReadForUser(user, LocalDateTime.now());
+        log.info("All notifications marked as read for user: {}", user.getUsername());
+    }
+
+    @Transactional
+    public void deleteNotification(Long notificationId) {
+        notificationRepository.deleteById(notificationId);
+    }
+
+    @Transactional
+    public void cleanupExpiredNotifications() {
+        int deletedCount = notificationRepository.deleteExpiredNotifications(LocalDateTime.now());
+        if (deletedCount > 0) {
+            log.info("Cleaned up {} expired notifications", deletedCount);
         }
-        return CompletableFuture.completedFuture(null);
     }
 
-    @Async
-    public CompletableFuture<Void> sendMaintenanceNotification(String vehicleLicensePlate, LocalDateTime maintenanceDate) {
-        try {
-            Context context = new Context();
-            context.setVariable("vehicleLicensePlate", vehicleLicensePlate);
-            context.setVariable("maintenanceDate", maintenanceDate);
-            context.setVariable("appName", appName);
-
-            String htmlContent = templateEngine.process("email/maintenance-notification", context);
-
-            // Send to admin emails (could be configured)
-            sendEmail(
-                "admin@carrental.com",
-                "Notificación de Mantenimiento - " + vehicleLicensePlate,
-                htmlContent
-            );
-
-            log.info("Sent maintenance notification for vehicle {}", vehicleLicensePlate);
-        } catch (Exception e) {
-            log.error("Failed to send maintenance notification", e);
-        }
-        return CompletableFuture.completedFuture(null);
+    public List<Notification> getNotificationsByType(String type) {
+        return notificationRepository.findByTypeOrderByCreatedAtDesc(type);
     }
 
-    // Marketing & Business Notifications
-    @Async
-    public CompletableFuture<Void> sendPromotionalEmail(User user, String promoCode, String discountDescription) {
-        try {
-            Context context = new Context();
-            context.setVariable("user", user);
-            context.setVariable("promoCode", promoCode);
-            context.setVariable("discountDescription", discountDescription);
-            context.setVariable("appName", appName);
-            context.setVariable("appUrl", appUrl);
-
-            String htmlContent = templateEngine.process("email/promotional", context);
-
-            sendEmail(
-                user.getEmail(),
-                "¡Oferta Especial en " + appName + "!",
-                htmlContent
-            );
-
-            log.info("Sent promotional email to {}", user.getEmail());
-        } catch (Exception e) {
-            log.error("Failed to send promotional email", e);
-        }
-        return CompletableFuture.completedFuture(null);
-    }
-
-    @Async
-    public CompletableFuture<Void> sendLoyaltyRewardEmail(User user, int points, String rewardDescription) {
-        try {
-            Context context = new Context();
-            context.setVariable("user", user);
-            context.setVariable("points", points);
-            context.setVariable("rewardDescription", rewardDescription);
-            context.setVariable("appName", appName);
-
-            String htmlContent = templateEngine.process("email/loyalty-reward", context);
-
-            sendEmail(
-                user.getEmail(),
-                "¡Has ganado puntos de lealtad!",
-                htmlContent
-            );
-
-            log.info("Sent loyalty reward email to {} - {} points", user.getEmail(), points);
-        } catch (Exception e) {
-            log.error("Failed to send loyalty reward email", e);
-        }
-        return CompletableFuture.completedFuture(null);
-    }
-
-    // Business Intelligence Notifications
-    @Async
-    public CompletableFuture<Void> sendDailyReportEmail(Map<String, Object> reportData) {
-        try {
-            Context context = new Context();
-            context.setVariable("reportData", reportData);
-            context.setVariable("appName", appName);
-            context.setVariable("reportDate", LocalDateTime.now());
-
-            String htmlContent = templateEngine.process("email/daily-report", context);
-
-            sendEmail(
-                "admin@carrental.com",
-                "Reporte Diario - " + appName,
-                htmlContent
-            );
-
-            log.info("Sent daily report email");
-        } catch (Exception e) {
-            log.error("Failed to send daily report email", e);
-        }
-        return CompletableFuture.completedFuture(null);
-    }
-
-    // Utility method for sending emails
-    private void sendEmail(String to, String subject, String htmlContent) throws MessagingException {
-        MimeMessage message = mailSender.createMimeMessage();
-        MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-
-        helper.setFrom(fromEmail);
-        helper.setTo(to);
-        helper.setSubject(subject);
-        helper.setText(htmlContent, true);
-
-        mailSender.send(message);
-    }
-
-    // Multi-channel notification method
-    @Async
-    public CompletableFuture<Void> sendMultiChannelNotification(
-            User user,
-            String subject,
-            String message,
-            NotificationType type,
-            Map<String, Object> templateData
-    ) {
-        try {
-            // Email
-            if (user.isEmailNotificationsEnabled()) {
-                Context context = new Context();
-                templateData.forEach(context::setVariable);
-                context.setVariable("user", user);
-                context.setVariable("appName", appName);
-
-                String template = getTemplateForNotificationType(type);
-                String htmlContent = templateEngine.process(template, context);
-
-                sendEmail(user.getEmail(), subject, htmlContent);
-            }
-
-            // SMS
-            if (user.isSmsNotificationsEnabled() && user.getPhoneNumber() != null) {
-                smsService.sendSMS(user.getPhoneNumber(), subject + ": " + message);
-            }
-
-            // Push notification (if mobile app is installed)
-            if (user.isPushNotificationsEnabled() && user.getDeviceToken() != null) {
-                // pushNotificationService.sendPushNotification(user.getDeviceToken(), subject, message);
-            }
-
-            log.info("Sent multi-channel notification to user {}: {}", user.getId(), subject);
-        } catch (Exception e) {
-            log.error("Failed to send multi-channel notification", e);
-        }
-        return CompletableFuture.completedFuture(null);
-    }
-
-    private String getTemplateForNotificationType(NotificationType type) {
-        return switch (type) {
-            case RESERVATION_CONFIRMATION -> "email/reservation-confirmation";
-            case PAYMENT_CONFIRMATION -> "email/payment-confirmation";
-            case PICKUP_REMINDER -> "email/pickup-reminder";
-            case RETURN_REMINDER -> "email/return-reminder";
-            case PROMOTIONAL -> "email/promotional";
-            case MAINTENANCE_ALERT -> "email/maintenance-notification";
-            default -> "email/generic-notification";
-        };
+    public List<Notification> getHighPriorityNotifications() {
+        return notificationRepository.findByPriorityOrderByCreatedAtDesc("HIGH");
     }
 }

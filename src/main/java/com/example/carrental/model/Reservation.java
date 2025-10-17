@@ -85,10 +85,10 @@ public class Reservation {
     @OneToOne(mappedBy = "reservation", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private Rental rental;
 
-    // Multi-tenant relationship
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "tenant_id")
-    private Tenant tenant;
+    // Multi-tenant relationship - DISABLED for core functionality
+    // @ManyToOne(fetch = FetchType.LAZY)
+    // @JoinColumn(name = "tenant_id")
+    // private Tenant tenant;
 
     // Business logic methods
     public void calculateTotalAmount() {

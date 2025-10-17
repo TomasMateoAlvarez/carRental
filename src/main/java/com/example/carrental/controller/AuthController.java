@@ -74,12 +74,18 @@ public class AuthController {
     @GetMapping("/me")
     public ResponseEntity<?> getCurrentUser(@RequestHeader("Authorization") String authHeader) {
         try {
-            // This endpoint would require authentication middleware
-            // For now, return a placeholder response
-            return ResponseEntity.ok(Map.of("message", "Protected endpoint - implement authentication middleware"));
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Invalid authorization header"));
+            }
+
+            String token = authHeader.substring(7);
+            AuthResponseDTO userInfo = authService.getCurrentUserFromToken(token);
+            return ResponseEntity.ok(userInfo);
         } catch (Exception e) {
+            log.error("Get current user failed", e);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Unauthorized"));
+                    .body(Map.of("error", "Unauthorized", "message", e.getMessage()));
         }
     }
 }

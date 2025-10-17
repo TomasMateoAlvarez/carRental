@@ -10,6 +10,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -52,12 +53,14 @@ public class VehicleController {
     }
 
     @PostMapping
+    @PreAuthorize("hasAuthority('VEHICLE_CREATE')")
     public ResponseEntity<VehicleResponseDTO> createVehicle(@Valid @RequestBody VehicleRequestDTO vehicleDTO) {
         VehicleResponseDTO createdVehicle = vehicleService.createVehicle(vehicleDTO);
         return ResponseEntity.status(HttpStatus.CREATED).body(createdVehicle);
     }
 
     @PutMapping("/{id}")
+    @PreAuthorize("hasAuthority('VEHICLE_UPDATE')")
     public ResponseEntity<VehicleResponseDTO> updateVehicle(@PathVariable Long id,
                                                           @Valid @RequestBody VehicleRequestDTO vehicleDTO) {
         VehicleResponseDTO updatedVehicle = vehicleService.updateVehicle(id, vehicleDTO);
@@ -65,13 +68,15 @@ public class VehicleController {
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('VEHICLE_DELETE')")
     public ResponseEntity<Void> deleteVehicle(@PathVariable Long id) {
         vehicleService.deleteVehicle(id);
         return ResponseEntity.noContent().build();
     }
 
-    // Business operations
+    // Business operations - Employees can ONLY change vehicle status
     @PatchMapping("/{id}/status")
+    @PreAuthorize("hasAuthority('VEHICLE_STATUS_CHANGE')")
     public ResponseEntity<VehicleResponseDTO> changeVehicleStatus(@PathVariable Long id,
                                                                 @RequestParam VehicleStatus status) {
         VehicleResponseDTO updatedVehicle = vehicleService.changeVehicleStatus(id, status);
@@ -100,6 +105,7 @@ public class VehicleController {
     }
 
     @GetMapping("/maintenance-needed")
+    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'READ')")
     public ResponseEntity<List<VehicleResponseDTO>> getVehiclesNeedingMaintenance() {
         List<VehicleResponseDTO> vehicles = vehicleService.getVehiclesNeedingMaintenance();
         return ResponseEntity.ok(vehicles);

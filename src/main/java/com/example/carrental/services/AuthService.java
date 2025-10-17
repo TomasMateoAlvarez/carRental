@@ -146,6 +146,35 @@ public class AuthService {
         );
     }
 
+    public AuthResponseDTO getCurrentUserFromToken(String token) {
+        log.info("Getting current user from token");
+
+        String username = jwtService.extractUsername(token);
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!jwtService.isTokenValid(token, user)) {
+            throw new RuntimeException("Invalid token");
+        }
+
+        // Extract roles and permissions
+        List<String> roles = user.getRoleNames();
+        List<String> permissions = user.getRoles().stream()
+                .flatMap(role -> role.getPermissions().stream())
+                .map(permission -> permission.getName())
+                .distinct()
+                .collect(Collectors.toList());
+
+        log.info("Current user retrieved successfully: {}", user.getUsername());
+
+        return AuthResponseDTO.success(
+                token, null, jwtService.getExpirationTime() / 1000,
+                user.getId(), user.getUsername(), user.getEmail(),
+                user.getFirstName(), user.getLastName(),
+                roles, permissions
+        );
+    }
+
     private Role createDefaultRole() {
         Role userRole = Role.builder()
                 .name("USER")
