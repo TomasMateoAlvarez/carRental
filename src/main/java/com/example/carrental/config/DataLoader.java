@@ -66,7 +66,7 @@ public class DataLoader implements CommandLineRunner {
             // Dashboard permissions
             "DASHBOARD_VIEW", "ANALYTICS_VIEW",
             // Maintenance permissions
-            "MAINTENANCE_VIEW", "MAINTENANCE_CREATE", "MAINTENANCE_UPDATE", "MAINTENANCE_RECORD_MANAGE",
+            "MAINTENANCE_VIEW", "MAINTENANCE_CREATE", "MAINTENANCE_UPDATE", "MAINTENANCE_RECORD_MANAGE", "MAINTENANCE_RECORD_CREATE",
             // Vehicle photo permissions
             "VEHICLE_PHOTO_UPLOAD", "VEHICLE_PHOTO_VIEW", "VEHICLE_PHOTO_DELETE",
             // Notification permissions
@@ -108,6 +108,7 @@ public class DataLoader implements CommandLineRunner {
             employeePermissions.add(permissionRepository.findByName("DASHBOARD_VIEW").orElseThrow());
             employeePermissions.add(permissionRepository.findByName("MAINTENANCE_VIEW").orElseThrow());
             employeePermissions.add(permissionRepository.findByName("MAINTENANCE_RECORD_MANAGE").orElseThrow());
+            employeePermissions.add(permissionRepository.findByName("MAINTENANCE_RECORD_CREATE").orElseThrow());
             employeePermissions.add(permissionRepository.findByName("VEHICLE_PHOTO_UPLOAD").orElseThrow());
             employeePermissions.add(permissionRepository.findByName("VEHICLE_PHOTO_VIEW").orElseThrow());
             employeePermissions.add(permissionRepository.findByName("NOTIFICATION_VIEW").orElseThrow());

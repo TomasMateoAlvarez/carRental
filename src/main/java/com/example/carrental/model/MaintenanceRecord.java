@@ -1,5 +1,6 @@
 package com.example.carrental.model;
 
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -23,6 +24,7 @@ public class MaintenanceRecord {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "vehicle_id", nullable = false)
+    @JsonBackReference
     private VehicleModel vehicle;
 
     @Column(name = "maintenance_type", nullable = false, length = 100)

@@ -1,6 +1,7 @@
 package com.example.carrental.model;
 
 import com.example.carrental.enums.VehicleStatus;
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -79,6 +80,7 @@ public class VehicleModel {
     private List<VehiclePhoto> photos;
 
     @OneToMany(mappedBy = "vehicle", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonManagedReference
     private List<MaintenanceRecord> maintenanceRecords;
 
     // Multi-tenant relationship - DISABLED for core functionality

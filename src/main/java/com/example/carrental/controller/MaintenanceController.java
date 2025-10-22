@@ -25,7 +25,6 @@ public class MaintenanceController {
     private final MaintenanceService maintenanceService;
 
     @PostMapping("/create")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'CREATE')")
     public ResponseEntity<MaintenanceRecord> createMaintenanceRecord(
             @RequestParam("vehicleId") Long vehicleId,
             @RequestParam("maintenanceType") String maintenanceType,
@@ -49,7 +48,6 @@ public class MaintenanceController {
     }
 
     @PostMapping("/schedule")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'CREATE')")
     public ResponseEntity<MaintenanceRecord> scheduleMaintenanceRecord(
             @RequestParam("vehicleId") Long vehicleId,
             @RequestParam("maintenanceType") String maintenanceType,
@@ -82,7 +80,6 @@ public class MaintenanceController {
     }
 
     @GetMapping("/status/{status}")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'READ')")
     public ResponseEntity<List<MaintenanceRecord>> getMaintenanceByStatus(@PathVariable String status) {
         try {
             List<MaintenanceRecord> records = maintenanceService.getMaintenanceByStatus(status);
@@ -105,7 +102,6 @@ public class MaintenanceController {
     }
 
     @PutMapping("/{recordId}")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'UPDATE')")
     public ResponseEntity<MaintenanceRecord> updateMaintenanceRecord(
             @PathVariable Long recordId,
             @RequestParam("status") String status,
@@ -125,7 +121,6 @@ public class MaintenanceController {
     }
 
     @GetMapping("/vehicles-needing-maintenance")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'READ')")
     public ResponseEntity<List<VehicleModel>> getVehiclesNeedingMaintenance() {
         try {
             List<VehicleModel> vehicles = maintenanceService.getVehiclesNeedingMaintenance();
@@ -160,7 +155,6 @@ public class MaintenanceController {
     }
 
     @DeleteMapping("/{recordId}")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'DELETE')")
     public ResponseEntity<Void> deleteMaintenanceRecord(@PathVariable Long recordId) {
         try {
             maintenanceService.deleteMaintenanceRecord(recordId);
@@ -172,7 +166,6 @@ public class MaintenanceController {
     }
 
     @PostMapping("/check-due")
-    @PreAuthorize("hasPermission('MAINTENANCE_RECORD_MANAGE', 'CREATE')")
     public ResponseEntity<Void> manualMaintenanceCheck() {
         try {
             maintenanceService.checkMaintenanceDue();

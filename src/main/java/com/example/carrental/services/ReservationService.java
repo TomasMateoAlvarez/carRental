@@ -91,7 +91,12 @@ public class ReservationService {
         // Save reservation
         reservation = reservationRepository.save(reservation);
 
-        log.info("Reservation created successfully: {}", reservation.getReservationCode());
+        // Update vehicle status to RESERVED
+        vehicle.setStatus(VehicleStatus.RESERVED);
+        vehicleRepository.save(vehicle);
+
+        log.info("Reservation created successfully: {} - Vehicle {} set to RESERVED",
+                reservation.getReservationCode(), vehicle.getLicensePlate());
 
         return mapToResponseDTO(reservation);
     }
@@ -178,6 +183,14 @@ public class ReservationService {
         // Cancel reservation
         reservation.cancel(reason);
         reservation = reservationRepository.save(reservation);
+
+        // Release vehicle back to AVAILABLE
+        VehicleModel vehicle = reservation.getVehicle();
+        if (vehicle.getStatus() == VehicleStatus.RESERVED) {
+            vehicle.setStatus(VehicleStatus.AVAILABLE);
+            vehicleRepository.save(vehicle);
+            log.info("Vehicle {} released back to AVAILABLE status", vehicle.getLicensePlate());
+        }
 
         log.info("Reservation cancelled successfully: {}", reservationCode);
 
