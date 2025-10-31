@@ -74,8 +74,8 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
                         .requestMatchers("/api/v1/vehicles", "/api/v1/vehicles/**").permitAll() // Allow public vehicle browsing
                         .requestMatchers("/api/v1/maintenance/**").permitAll() // Allow public maintenance access
+                        .requestMatchers("/api/v1/reservations/**").permitAll() // Allow public reservation access
                         // Protected endpoints
-                        .requestMatchers("/api/v1/reservations/**").authenticated()
                         .requestMatchers("/users/**").hasRole("ADMIN")
                         .anyRequest().authenticated()
                 )

@@ -1,6 +1,7 @@
 package com.example.carrental.model;
 
 import com.fasterxml.jackson.annotation.JsonBackReference;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -26,6 +27,7 @@ public class MaintenanceRecord {
     @JoinColumn(name = "vehicle_id", nullable = false)
     @JsonBackReference
     private VehicleModel vehicle;
+
 
     @Column(name = "maintenance_type", nullable = false, length = 100)
     private String maintenanceType; // "ROUTINE", "REPAIR", "INSPECTION", "EMERGENCY"
@@ -81,5 +83,10 @@ public class MaintenanceRecord {
     @PreUpdate
     protected void onUpdate() {
         updatedAt = LocalDateTime.now();
+    }
+
+    @JsonProperty("vehicleId")
+    public Long getVehicleId() {
+        return vehicle != null ? vehicle.getId() : null;
     }
 }

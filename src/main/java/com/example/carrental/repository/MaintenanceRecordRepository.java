@@ -15,7 +15,8 @@ public interface MaintenanceRecordRepository extends JpaRepository<MaintenanceRe
 
     List<MaintenanceRecord> findByVehicleOrderByServiceDateDesc(VehicleModel vehicle);
 
-    List<MaintenanceRecord> findByVehicleIdOrderByServiceDateDesc(Long vehicleId);
+    @Query("SELECT mr FROM MaintenanceRecord mr WHERE mr.vehicle.id = :vehicleId ORDER BY mr.serviceDate DESC")
+    List<MaintenanceRecord> findByVehicleIdOrderByServiceDateDesc(@Param("vehicleId") Long vehicleId);
 
     List<MaintenanceRecord> findByStatusOrderByServiceDateDesc(String status);
 

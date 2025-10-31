@@ -51,7 +51,7 @@ public class MaintenanceService {
             .mileageAtService(mileageAtService)
             .nextServiceMileage(nextServiceMileage)
             .serviceDate(LocalDateTime.now())
-            .status("COMPLETED")
+            .status("SCHEDULED")
             .createdByUserId(createdByUserId)
             .build();
 

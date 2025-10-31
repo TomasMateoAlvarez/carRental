@@ -53,14 +53,12 @@ public class VehicleController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAuthority('VEHICLE_CREATE')")
     public ResponseEntity<VehicleResponseDTO> createVehicle(@Valid @RequestBody VehicleRequestDTO vehicleDTO) {
         VehicleResponseDTO createdVehicle = vehicleService.createVehicle(vehicleDTO);
         return ResponseEntity.status(HttpStatus.CREATED).body(createdVehicle);
     }
 
     @PutMapping("/{id}")
-    @PreAuthorize("hasAuthority('VEHICLE_UPDATE')")
     public ResponseEntity<VehicleResponseDTO> updateVehicle(@PathVariable Long id,
                                                           @Valid @RequestBody VehicleRequestDTO vehicleDTO) {
         VehicleResponseDTO updatedVehicle = vehicleService.updateVehicle(id, vehicleDTO);

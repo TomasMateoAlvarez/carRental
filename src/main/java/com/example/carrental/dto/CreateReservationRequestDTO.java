@@ -1,6 +1,6 @@
 package com.example.carrental.dto;
 
-import jakarta.validation.constraints.Future;
+import jakarta.validation.constraints.FutureOrPresent;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
@@ -18,11 +18,11 @@ public class CreateReservationRequestDTO {
     private Long vehicleId;
 
     @NotNull(message = "Start date is required")
-    @Future(message = "Start date must be in the future")
+    @FutureOrPresent(message = "Start date must be today or in the future")
     private LocalDate startDate;
 
     @NotNull(message = "End date is required")
-    @Future(message = "End date must be in the future")
+    @FutureOrPresent(message = "End date must be today or in the future")
     private LocalDate endDate;
 
     @Size(max = 200, message = "Pickup location must not exceed 200 characters")

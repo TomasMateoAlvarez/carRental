@@ -32,13 +32,12 @@ public class MaintenanceController {
             @RequestParam("serviceProvider") String serviceProvider,
             @RequestParam("reason") String reason,
             @RequestParam("cost") BigDecimal cost,
-            @RequestParam("mileageAtService") Integer mileageAtService,
-            @AuthenticationPrincipal User currentUser) {
+            @RequestParam("mileageAtService") Integer mileageAtService) {
 
         try {
             MaintenanceRecord record = maintenanceService.createMaintenanceRecord(
                 vehicleId, maintenanceType, description, serviceProvider,
-                reason, cost, mileageAtService, currentUser.getId()
+                reason, cost, mileageAtService, 1L // Temporary: use admin user ID
             );
             return ResponseEntity.ok(record);
         } catch (Exception e) {
