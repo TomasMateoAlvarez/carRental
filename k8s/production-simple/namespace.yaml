@@ -1,0 +1,10 @@
+# CarRental Production Namespace - Simple Deployment
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental-prod
+  labels:
+    name: carrental-prod
+    environment: production
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/part-of: carrental-saas

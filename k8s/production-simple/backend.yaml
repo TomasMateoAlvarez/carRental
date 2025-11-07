@@ -1,0 +1,222 @@
+# CarRental Backend - Production Simple
+apiVersion: v1
+kind: Service
+metadata:
+  name: carrental-backend-service
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-backend-service
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8083
+    targetPort: 8083
+    name: http
+  - port: 8081
+    targetPort: 8081
+    name: metrics
+  selector:
+    app.kubernetes.io/name: carrental-backend
+
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carrental-backend-deployment
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 2  # Start with 2 for availability
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: carrental-backend
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: carrental-saas
+        version: v1
+    spec:
+      # Wait for database to be ready
+      initContainers:
+      - name: wait-for-db
+        image: postgres:15-alpine
+        command: ['sh', '-c']
+        args:
+        - |
+          until pg_isready -h postgres-service -p 5432 -U $(POSTGRES_USER); do
+            echo "Waiting for database..."
+            sleep 5
+          done
+          echo "Database is ready!"
+        env:
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: carrental-secrets
+              key: SPRING_DATASOURCE_USERNAME
+
+      containers:
+      - name: carrental-backend
+        image: carrental-backend:latest  # Replace with your actual image
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8083
+          name: http
+        - containerPort: 8081
+          name: metrics
+
+        # Environment variables from ConfigMap and Secrets
+        envFrom:
+        - configMapRef:
+            name: carrental-config
+        - secretRef:
+            name: carrental-secrets
+
+        # Additional environment variables
+        env:
+        - name: JAVA_OPTS
+          value: "-Xmx768m -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=200"
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8081
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        # Startup probe (for slow startup applications)
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8081
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+
+        # Volume mounts for temporary files
+        volumeMounts:
+        - name: tmp-volume
+          mountPath: /tmp
+        - name: logs-volume
+          mountPath: /app/logs
+
+      volumes:
+      - name: tmp-volume
+        emptyDir: {}
+      - name: logs-volume
+        emptyDir: {}
+
+      # Pod-level security context
+      securityContext:
+        fsGroup: 1000
+
+      # Pod disruption budget will be separate
+      restartPolicy: Always
+
+---
+# Horizontal Pod Autoscaler (simple)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: carrental-backend-hpa
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-backend-hpa
+    app.kubernetes.io/component: autoscaling
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-backend-deployment
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carrental-backend-pdb
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-backend-pdb
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  minAvailable: 1

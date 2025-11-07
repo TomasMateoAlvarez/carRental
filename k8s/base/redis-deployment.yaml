@@ -1,0 +1,182 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-deployment
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+    app.kubernetes.io/version: "7"
+spec:
+  replicas: 1  # Single Redis instance for simplicity
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: cache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+        app.kubernetes.io/part-of: carrental-saas
+        app.kubernetes.io/version: "7"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999  # redis user
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+          name: redis
+          protocol: TCP
+        command:
+        - redis-server
+        - /etc/redis/redis.conf
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secrets
+              key: REDIS_PASSWORD
+        volumeMounts:
+        - name: redis-storage
+          mountPath: /data
+        - name: redis-config-volume
+          mountPath: /etc/redis/redis.conf
+          subPath: redis.conf
+          readOnly: true
+        # Health checks
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(REDIS_PASSWORD)
+            - ping
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(REDIS_PASSWORD)
+            - ping
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+          periodSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        # Resource limits
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Redis needs write access to /data
+      volumes:
+      - name: redis-storage
+        persistentVolumeClaim:
+          claimName: redis-pvc
+      - name: redis-config-volume
+        configMap:
+          name: redis-config
+          items:
+          - key: redis.conf
+            path: redis.conf
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-service
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  type: ClusterIP
+  ports:
+  - port: 6379
+    targetPort: 6379
+    protocol: TCP
+    name: redis
+  selector:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+
+---
+# Redis ConfigMap (update the main configmap to replace placeholder)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config-updated
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  redis.conf: |
+    # Network
+    bind 0.0.0.0
+    port 6379
+
+    # Memory
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+
+    # Persistence
+    save 900 1
+    save 300 10
+    save 60 10000
+
+    # Security - password will be set via environment variable
+    # requirepass is set via command line with REDIS_PASSWORD
+
+    # Performance
+    timeout 300
+    tcp-keepalive 300
+
+    # Logging
+    loglevel notice
+    logfile ""
+
+    # Working directory
+    dir /data
+
+    # Append only file
+    appendonly yes
+    appendfsync everysec
+
+    # Disable dangerous commands
+    rename-command FLUSHDB ""
+    rename-command FLUSHALL ""
+    rename-command SHUTDOWN SHUTDOWN_REDIS
+    rename-command CONFIG CONFIG_REDIS

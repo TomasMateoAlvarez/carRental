@@ -1,0 +1,127 @@
+# PostgreSQL Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd  # Use your cluster's fast storage class
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# Redis Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Application Logs Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-logs-pvc
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: logs
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessModes:
+    - ReadWriteMany  # Multiple pods can write logs
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Backup Storage Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# File Uploads Persistent Volume Claim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: storage
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessModes:
+    - ReadWriteMany  # Multiple backend pods need access
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+# Storage Class for fast SSD storage (example for cloud providers)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+  labels:
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: kubernetes.io/aws-ebs  # Change for your cloud provider
+parameters:
+  type: gp3  # AWS EBS GP3 volumes
+  fsType: ext4
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# Storage Class for standard storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard
+  labels:
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: kubernetes.io/aws-ebs  # Change for your cloud provider
+parameters:
+  type: gp2  # AWS EBS GP2 volumes
+  fsType: ext4
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain

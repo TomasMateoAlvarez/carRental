@@ -1,0 +1,507 @@
+# Traffic Management for CarRental SaaS
+# Advanced traffic shaping, rate limiting, and routing policies
+
+# Quality of Service (QoS) for different traffic types
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qos-critical-traffic
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: qos-critical-traffic
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+    traffic-priority: critical
+spec:
+  podSelector:
+    matchLabels:
+      traffic-priority: critical
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # High priority traffic gets dedicated bandwidth
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 8083
+  egress:
+  - to: []
+
+---
+# Traffic shaping with Istio Virtual Service for backend
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-backend-traffic-shaping
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-traffic-shaping
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  # Rate limiting for authentication endpoints
+  - match:
+    - uri:
+        prefix: /api/v1/auth
+    route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8083
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 100ms
+    timeout: 10s
+    retries:
+      attempts: 2
+      perTryTimeout: 5s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+
+  # Higher limits for vehicle search (user-facing)
+  - match:
+    - uri:
+        prefix: /api/v1/vehicles
+    route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8083
+    timeout: 15s
+    retries:
+      attempts: 3
+      perTryTimeout: 5s
+
+  # Payment processing with strict timeouts
+  - match:
+    - uri:
+        prefix: /api/v1/payments
+    route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8083
+    timeout: 30s
+    retries:
+      attempts: 1
+      perTryTimeout: 30s
+      retryOn: gateway-error
+
+  # Default routing for other endpoints
+  - route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8083
+    timeout: 20s
+    retries:
+      attempts: 3
+      perTryTimeout: 7s
+
+---
+# Destination Rule with connection pooling and circuit breaker
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-advanced-traffic
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-advanced-traffic
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 200
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+          probes: 9
+      http:
+        http1MaxPendingRequests: 128
+        http2MaxRequests: 200
+        maxRequestsPerConnection: 20
+        maxRetries: 5
+        consecutiveGatewayErrors: 10
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+        minHealthPercent: 30
+        splitExternalLocalOriginErrors: false
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+      splitExternalLocalOriginErrors: false
+  portLevelSettings:
+  # API traffic (port 8083)
+  - port:
+      number: 8083
+    connectionPool:
+      tcp:
+        maxConnections: 150
+        connectTimeout: 20s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 20s
+      baseEjectionTime: 20s
+
+  # Health check traffic (port 8081)
+  - port:
+      number: 8081
+    connectionPool:
+      tcp:
+        maxConnections: 20
+        connectTimeout: 5s
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 5
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      interval: 15s
+      baseEjectionTime: 15s
+
+---
+# Traffic splitting for A/B testing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-ab-testing
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-ab-testing
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  # A/B testing for new features (10% to v2, 90% to v1)
+  - match:
+    - headers:
+        feature-flag:
+          exact: "new-ui"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: v2
+      weight: 10
+    - destination:
+        host: carrental-backend-service
+        subset: v1
+      weight: 90
+  # Default traffic to stable version
+  - route:
+    - destination:
+        host: carrental-backend-service
+        subset: v1
+
+---
+# Destination Rule with subsets for A/B testing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-subsets
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-subsets
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 100
+  - name: v2
+    labels:
+      version: v2
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 50
+
+---
+# Priority Class for critical workloads
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: carrental-critical
+  labels:
+    app.kubernetes.io/name: carrental-critical
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+value: 1000
+globalDefault: false
+description: "Priority class for critical CarRental services"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: carrental-high
+  labels:
+    app.kubernetes.io/name: carrental-high
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+value: 500
+globalDefault: false
+description: "Priority class for high priority CarRental services"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: carrental-normal
+  labels:
+    app.kubernetes.io/name: carrental-normal
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+value: 100
+globalDefault: true
+description: "Priority class for normal CarRental services"
+
+---
+# Network QoS using Pod Annotations
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: network-qos-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: network-qos-config
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  # QoS classes for different types of traffic
+  critical-bandwidth: "1000M"
+  high-bandwidth: "500M"
+  normal-bandwidth: "100M"
+  low-bandwidth: "50M"
+
+  # Traffic shaping policies
+  burst-size: "100M"
+  rate-limit: "1000"
+
+  # Network latency requirements
+  critical-latency: "10ms"
+  high-latency: "50ms"
+  normal-latency: "100ms"
+
+---
+# Service Mesh rate limiting with EnvoyFilter
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: carrental-global-rate-limit
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-global-rate-limit
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  workloadSelector:
+    labels:
+      app.kubernetes.io/name: carrental-backend
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: local_rate_limiter
+            # Global rate limit: 1000 requests per minute
+            token_bucket:
+              max_tokens: 1000
+              tokens_per_fill: 1000
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            response_headers_to_add:
+            - append: false
+              header:
+                key: x-local-rate-limit
+                value: 'true'
+
+---
+# EnvoyFilter for API-specific rate limiting
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: carrental-api-rate-limit
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-api-rate-limit
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  workloadSelector:
+    labels:
+      app.kubernetes.io/name: carrental-backend
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: SIDECAR_INBOUND
+      routeConfiguration:
+        vhost:
+          route:
+            match:
+              prefix: "/api/v1/auth"
+    patch:
+      operation: MERGE
+      value:
+        route:
+          rate_limits:
+          - actions:
+            - request_headers:
+                header_name: "x-forwarded-for"
+                descriptor_key: "client_ip"
+          - actions:
+            - request_headers:
+                header_name: ":path"
+                descriptor_key: "path"
+
+---
+# Traffic mirroring for testing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-traffic-mirroring
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-traffic-mirroring
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  - match:
+    - uri:
+        prefix: /api/v1/
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: v1
+    mirror:
+      host: carrental-backend-service
+      subset: v2
+    mirrorPercentage:
+      value: 5.0  # Mirror 5% of traffic to v2
+
+---
+# Circuit breaker configuration
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-circuit-breaker
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-circuit-breaker
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: "*.carrental.svc.cluster.local"
+  trafficPolicy:
+    outlierDetection:
+      # Circuit breaker triggers
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 70
+      minHealthPercent: 30
+
+      # Health checking
+      splitExternalLocalOriginErrors: true
+  portLevelSettings:
+  - port:
+      number: 5432  # PostgreSQL
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      consecutive5xxErrors: 2
+      interval: 15s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 50
+
+---
+# Fault injection for chaos engineering
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-fault-injection
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-fault-injection
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+    environment: testing
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  - match:
+    - headers:
+        x-chaos-test:
+          exact: "true"
+    fault:
+      # Inject 500ms delay for 10% of requests
+      delay:
+        percentage:
+          value: 10.0
+        fixedDelay: 500ms
+      # Abort 5% of requests with 503 error
+      abort:
+        percentage:
+          value: 5.0
+        httpStatus: 503
+    route:
+    - destination:
+        host: carrental-backend-service
+  # Normal traffic without faults
+  - route:
+    - destination:
+        host: carrental-backend-service

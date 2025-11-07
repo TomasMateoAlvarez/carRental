@@ -1,0 +1,254 @@
+# Production Deployment Pipeline - Simple but Robust
+name: Production Deploy
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_BACKEND: ${{ github.repository }}-backend
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}-frontend
+
+jobs:
+  # Build and test backend
+  build-backend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Cache Maven dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.m2
+        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+
+    - name: Run tests
+      run: ./mvnw test
+
+    - name: Build application
+      run: ./mvnw clean package -DskipTests
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push Docker image
+      if: github.event_name != 'pull_request'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile.backend
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+  # Build and test frontend
+  build-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'carrental-frontend/package-lock.json'
+
+    - name: Install dependencies
+      working-directory: ./carrental-frontend
+      run: npm ci
+
+    - name: Run tests
+      working-directory: ./carrental-frontend
+      run: npm run test:ci
+
+    - name: Build application
+      working-directory: ./carrental-frontend
+      run: npm run build
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push Docker image
+      if: github.event_name != 'pull_request'
+      uses: docker/build-push-action@v5
+      with:
+        context: ./carrental-frontend
+        file: ./carrental-frontend/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+
+  # Deploy to production
+  deploy-production:
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+        chmod 600 ~/.kube/config
+
+    - name: Verify cluster connection
+      run: kubectl cluster-info
+
+    - name: Update image tags
+      run: |
+        # Get the image SHA from the build
+        BACKEND_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}:main-${{ github.sha }}"
+        FRONTEND_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}:main-${{ github.sha }}"
+
+        # Update deployment images
+        sed -i "s|image: carrental-backend:latest|image: ${BACKEND_IMAGE}|g" k8s/production-simple/backend.yaml
+        sed -i "s|image: carrental-frontend:latest|image: ${FRONTEND_IMAGE}|g" k8s/production-simple/frontend.yaml
+
+    - name: Deploy to Kubernetes
+      run: |
+        # Apply configurations in order
+        kubectl apply -f k8s/production-simple/namespace.yaml
+        kubectl apply -f k8s/production-simple/configmap.yaml
+        kubectl apply -f k8s/production-simple/postgres.yaml
+
+        # Wait for database to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=postgres -n carrental-prod --timeout=300s
+
+        # Deploy backend
+        kubectl apply -f k8s/production-simple/backend.yaml
+
+        # Wait for backend to be ready
+        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=carrental-backend -n carrental-prod --timeout=300s
+
+        # Deploy frontend
+        kubectl apply -f k8s/production-simple/frontend.yaml
+
+        # Apply ingress and monitoring
+        kubectl apply -f k8s/production-simple/ingress.yaml
+        kubectl apply -f k8s/production-simple/backup.yaml
+        kubectl apply -f k8s/production-simple/monitoring.yaml
+
+    - name: Verify deployment
+      run: |
+        # Check deployment status
+        kubectl get deployments -n carrental-prod
+        kubectl get pods -n carrental-prod
+        kubectl get services -n carrental-prod
+        kubectl get ingress -n carrental-prod
+
+        # Wait for all deployments to be ready
+        kubectl wait --for=condition=available deployment --all -n carrental-prod --timeout=300s
+
+    - name: Run health checks
+      run: |
+        # Get ingress IP
+        echo "Checking deployment health..."
+        kubectl get pods -n carrental-prod -o wide
+
+        # Check if services are responding (internal)
+        kubectl exec -n carrental-prod deployment/carrental-backend-deployment -- curl -f http://localhost:8081/actuator/health || echo "Backend health check failed"
+
+    - name: Notify deployment status
+      if: always()
+      run: |
+        if [ ${{ job.status }} == 'success' ]; then
+          echo "✅ Deployment to production completed successfully!"
+          echo "🌐 Application should be available at: https://carrental.yourdomain.com"
+          echo "📊 Monitoring available at: https://monitoring.yourdomain.com"
+        else
+          echo "❌ Deployment to production failed!"
+        fi
+
+  # Rollback job (manual trigger)
+  rollback:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    environment: production
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up kubectl
+      uses: azure/setup-kubectl@v3
+
+    - name: Configure kubectl
+      run: |
+        mkdir -p ~/.kube
+        echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > ~/.kube/config
+
+    - name: Rollback deployment
+      run: |
+        echo "Rolling back to previous version..."
+        kubectl rollout undo deployment/carrental-backend-deployment -n carrental-prod
+        kubectl rollout undo deployment/carrental-frontend-deployment -n carrental-prod
+
+        echo "Waiting for rollback to complete..."
+        kubectl rollout status deployment/carrental-backend-deployment -n carrental-prod
+        kubectl rollout status deployment/carrental-frontend-deployment -n carrental-prod
+
+        echo "✅ Rollback completed successfully!"

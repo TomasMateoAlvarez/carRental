@@ -1,0 +1,714 @@
+# Advanced Security Policies for CarRental SaaS
+# Comprehensive security hardening and compliance configurations
+
+# Pod Security Standards (restricted profile)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental-secure
+  labels:
+    app.kubernetes.io/name: carrental-secure
+    app.kubernetes.io/part-of: carrental-saas
+    # Pod Security Standards
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# Security Context Constraints
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: carrental-restricted-scc
+  labels:
+    app.kubernetes.io/name: carrental-restricted-scc
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: []
+allowedFlexVolumes: []
+allowedUnsafeSysctls: []
+defaultAddCapabilities: []
+defaultAllowPrivilegeEscalation: false
+forbiddenSysctls:
+- "*"
+fsGroup:
+  type: MustRunAs
+  ranges:
+  - min: 1000
+    max: 65535
+readOnlyRootFilesystem: true
+requiredDropCapabilities:
+- ALL
+runAsUser:
+  type: MustRunAsNonRoot
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: MustRunAs
+  ranges:
+  - min: 1000
+    max: 65535
+volumes:
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+
+---
+# OPA Gatekeeper ConstraintTemplate for security validation
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: carrrentalsecuritypolicy
+  labels:
+    app.kubernetes.io/name: carrrentalsecuritypolicy
+    app.kubernetes.io/component: policy-engine
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  crd:
+    spec:
+      names:
+        kind: CarRentalSecurityPolicy
+      validation:
+        type: object
+        properties:
+          allowedImages:
+            type: array
+            description: "List of allowed container image registries"
+            items:
+              type: string
+          requiredLabels:
+            type: array
+            description: "Required labels for all resources"
+            items:
+              type: string
+          maxReplicas:
+            type: integer
+            description: "Maximum number of replicas allowed"
+          bannedResources:
+            type: array
+            description: "Banned Kubernetes resources"
+            items:
+              type: string
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package carrrentalsecuritypolicy
+
+      violation[{"msg": msg}] {
+        # Check for allowed image registries
+        container := input.review.object.spec.containers[_]
+        not startswith(container.image, input.parameters.allowedImages[_])
+        msg := sprintf("Container image '%v' is not from allowed registry", [container.image])
+      }
+
+      violation[{"msg": msg}] {
+        # Check for required labels
+        required := input.parameters.requiredLabels[_]
+        not input.review.object.metadata.labels[required]
+        msg := sprintf("Missing required label: %v", [required])
+      }
+
+      violation[{"msg": msg}] {
+        # Check replica limits
+        input.review.object.spec.replicas > input.parameters.maxReplicas
+        msg := sprintf("Replica count %v exceeds maximum allowed %v", [input.review.object.spec.replicas, input.parameters.maxReplicas])
+      }
+
+      violation[{"msg": msg}] {
+        # Check for security context
+        container := input.review.object.spec.containers[_]
+        not container.securityContext.runAsNonRoot
+        msg := "Container must run as non-root user"
+      }
+
+      violation[{"msg": msg}] {
+        # Check for read-only root filesystem
+        container := input.review.object.spec.containers[_]
+        not container.securityContext.readOnlyRootFilesystem
+        msg := "Container must have read-only root filesystem"
+      }
+
+---
+# Gatekeeper Constraint for CarRental security policy
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: CarRentalSecurityPolicy
+metadata:
+  name: carrental-security-constraints
+  labels:
+    app.kubernetes.io/name: carrental-security-constraints
+    app.kubernetes.io/component: policy-enforcement
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  match:
+    kinds:
+    - apiGroups: ["apps"]
+      kinds: ["Deployment", "StatefulSet", "DaemonSet"]
+    - apiGroups: [""]
+      kinds: ["Pod"]
+    namespaces: ["carrental", "carrental-secure"]
+  parameters:
+    allowedImages:
+    - "ghcr.io/carrental/"
+    - "docker.io/carrental/"
+    - "gcr.io/carrental-project/"
+    - "carrental.azurecr.io/"
+    requiredLabels:
+    - "app.kubernetes.io/name"
+    - "app.kubernetes.io/part-of"
+    - "app.kubernetes.io/version"
+    maxReplicas: 50
+    bannedResources:
+    - "hostNetwork"
+    - "hostPID"
+    - "hostIPC"
+
+---
+# Network Security Policy - Default Deny All
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-advanced
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: default-deny-all-advanced
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  # This policy denies all ingress and egress traffic by default
+
+---
+# Network Security Policy - Encrypted Traffic Only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: encrypted-traffic-only
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: encrypted-traffic-only
+    app.kubernetes.io/component: network-security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      security.carrental.com/encryption: required
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Only allow HTTPS traffic
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 8443
+  egress:
+  # Only allow encrypted outbound traffic
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 993  # IMAPS
+    - protocol: TCP
+      port: 995  # POP3S
+
+---
+# RBAC - Least Privilege Access
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: carrental-developer-role
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-developer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+# Read-only access to most resources
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+# Limited write access to specific resources
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+# No access to secrets or sensitive resources
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: carrental-operator-role
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-operator-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+# Full operational access except secrets
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "events"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+# Limited secret access
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["carrental-config-secret"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: carrental-security-admin
+  labels:
+    app.kubernetes.io/name: carrental-security-admin
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+# Security-focused cluster access
+- apiGroups: ["security.openshift.io"]
+  resources: ["securitycontextconstraints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["policy"]
+  resources: ["podsecuritypolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["*"]
+
+---
+# Service Account with minimal permissions
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: carrental-restricted-sa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-restricted-sa
+    app.kubernetes.io/component: service-account
+    app.kubernetes.io/part-of: carrental-saas
+automountServiceAccountToken: false
+
+---
+# Admission Controller Webhook for custom validations
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionWebhook
+metadata:
+  name: carrental-security-validator
+  labels:
+    app.kubernetes.io/name: carrental-security-validator
+    app.kubernetes.io/component: admission-control
+    app.kubernetes.io/part-of: carrental-saas
+webhooks:
+- name: security.carrental.com
+  clientConfig:
+    service:
+      name: carrental-security-webhook
+      namespace: carrental
+      path: "/validate"
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: ["apps"]
+    apiVersions: ["v1"]
+    resources: ["deployments", "statefulsets"]
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  failurePolicy: Fail
+
+---
+# Falco Security Rules for Runtime Monitoring
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-security-rules
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: falco-security-rules
+    app.kubernetes.io/component: runtime-security
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  carrental_rules.yaml: |
+    # CarRental specific security rules
+    - rule: CarRental Unauthorized File Access
+      desc: Detect unauthorized access to sensitive CarRental files
+      condition: >
+        open_read and
+        fd.name startswith '/app/secrets/' and
+        not proc.name in (carrental-backend, vault-agent)
+      output: >
+        Unauthorized access to CarRental secrets
+        (user=%user.name command=%proc.cmdline file=%fd.name)
+      priority: CRITICAL
+      tags: [carrental, secrets, unauthorized]
+
+    - rule: CarRental Database Connection from Unauthorized Process
+      desc: Detect database connections from processes other than backend
+      condition: >
+        net_connect and
+        fd.rip = "postgres-service" and
+        fd.rport = 5432 and
+        not proc.name = "carrental-backend"
+      output: >
+        Unauthorized database connection attempt
+        (user=%user.name command=%proc.cmdline destination=%fd.rip:%fd.rport)
+      priority: HIGH
+      tags: [carrental, database, unauthorized]
+
+    - rule: CarRental Privilege Escalation Attempt
+      desc: Detect privilege escalation attempts in CarRental containers
+      condition: >
+        spawned_process and
+        container.name contains "carrental" and
+        (proc.name in (su, sudo, passwd, chsh, newgrp) or
+         proc.args contains "chmod +s")
+      output: >
+        Privilege escalation attempt in CarRental container
+        (user=%user.name command=%proc.cmdline container=%container.name)
+      priority: CRITICAL
+      tags: [carrental, privilege_escalation]
+
+---
+# Security Monitoring Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-monitoring-dashboard
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: security-monitoring-dashboard
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+    grafana_dashboard: "1"
+data:
+  security-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "CarRental Security Monitoring",
+        "tags": ["security", "carrental", "compliance"],
+        "panels": [
+          {
+            "id": 1,
+            "title": "Security Policy Violations",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(gatekeeper_violations_total[5m])",
+                "legendFormat": "Policy Violations"
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "title": "Failed Authentication Attempts",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{response_code=~\"401|403\"}[5m]))",
+                "legendFormat": "Auth Failures"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "title": "TLS Certificate Status",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "cert_manager_certificate_ready_status",
+                "legendFormat": "Cert Status"
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+---
+# Compliance scanning with Falco
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco-compliance-scanner
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: falco-compliance-scanner
+    app.kubernetes.io/component: compliance
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: falco-compliance-scanner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: falco-compliance-scanner
+        app.kubernetes.io/component: compliance
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: carrental-restricted-sa
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: falco
+        image: falcosecurity/falco:0.36.2
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/falco
+          readOnly: true
+        - name: rules
+          mountPath: /etc/falco/rules.d
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: config
+        configMap:
+          name: falco-config
+      - name: rules
+        configMap:
+          name: falco-security-rules
+      - name: tmp
+        emptyDir: {}
+
+---
+# Image scanning policy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: image-security-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: image-security-policy
+    app.kubernetes.io/component: image-security
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  policy.yaml: |
+    # Image security scanning policy
+    security_policies:
+      # Vulnerability scanning
+      vulnerability_scanning:
+        enabled: true
+        severity_threshold: "MEDIUM"
+        block_critical: true
+        block_high: true
+        allow_medium: false
+
+      # Image signing verification
+      image_signing:
+        enabled: true
+        required_signers:
+        - "carrental-ci@company.com"
+        - "security-team@company.com"
+
+      # Base image policies
+      base_images:
+        allowed_registries:
+        - "gcr.io/distroless"
+        - "docker.io/library"
+        - "chainguard.dev"
+        blocked_images:
+        - "*:latest"
+        - "*:master"
+        - "*:main"
+
+      # Runtime scanning
+      runtime_scanning:
+        enabled: true
+        scan_interval: "24h"
+        quarantine_on_violation: true
+
+---
+# Security audit logging
+apiVersion: audit.k8s.io/v1
+kind: Policy
+metadata:
+  name: carrental-audit-policy
+  labels:
+    app.kubernetes.io/name: carrental-audit-policy
+    app.kubernetes.io/component: audit
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+# Log all security-related events
+- level: Metadata
+  namespaces: ["carrental", "carrental-secure"]
+  resources:
+  - group: ""
+    resources: ["secrets", "serviceaccounts"]
+  - group: "rbac.authorization.k8s.io"
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  - group: "networking.k8s.io"
+    resources: ["networkpolicies"]
+
+# Log all administrative actions
+- level: RequestResponse
+  users: ["system:admin", "admin@carrental.com"]
+
+# Log authentication events
+- level: Metadata
+  namespaces: ["carrental"]
+  verbs: ["create", "update", "patch", "delete"]
+  resources:
+  - group: ""
+    resources: ["pods", "services"]
+
+# Log exec and attach commands
+- level: Request
+  verbs: ["create"]
+  resources:
+  - group: ""
+    resources: ["pods/exec", "pods/attach", "pods/portforward"]
+
+---
+# Threat detection rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: threat-detection-rules
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: threat-detection-rules
+    app.kubernetes.io/component: threat-detection
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  detection_rules.yaml: |
+    # Threat detection rules for CarRental SaaS
+    threat_detection:
+      # Anomaly detection
+      anomalies:
+        - name: "unusual_api_calls"
+          description: "Detect unusual API call patterns"
+          condition: "rate(http_requests_total) > 1000"
+          severity: "medium"
+
+        - name: "failed_login_attempts"
+          description: "Multiple failed login attempts"
+          condition: "rate(login_failures_total) > 10"
+          severity: "high"
+
+        - name: "privilege_escalation"
+          description: "Privilege escalation attempt detected"
+          condition: "privileged_container_started"
+          severity: "critical"
+
+      # Attack patterns
+      attack_patterns:
+        - name: "sql_injection"
+          pattern: ".*union.*select.*|.*drop.*table.*"
+          action: "block"
+
+        - name: "xss_attempt"
+          pattern: ".*<script.*>.*|.*javascript:.*"
+          action: "block"
+
+        - name: "path_traversal"
+          pattern: ".*\\.\\./.*|.*%2e%2e%2f.*"
+          action: "block"
+
+---
+# Security incident response
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: incident-response-playbook
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: incident-response-playbook
+    app.kubernetes.io/component: incident-response
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  playbook.yaml: |
+    # Security Incident Response Playbook
+    incident_response:
+      # Incident classification
+      severity_levels:
+        critical:
+          - "Data breach"
+          - "System compromise"
+          - "Privilege escalation"
+          response_time: "15 minutes"
+
+        high:
+          - "Authentication bypass"
+          - "Service disruption"
+          - "Unauthorized access"
+          response_time: "1 hour"
+
+        medium:
+          - "Policy violation"
+          - "Suspicious activity"
+          - "Configuration drift"
+          response_time: "4 hours"
+
+      # Response procedures
+      procedures:
+        containment:
+          - "Isolate affected systems"
+          - "Block malicious traffic"
+          - "Revoke compromised credentials"
+
+        investigation:
+          - "Collect logs and evidence"
+          - "Analyze attack vectors"
+          - "Assess impact scope"
+
+        recovery:
+          - "Restore from clean backups"
+          - "Apply security patches"
+          - "Update security policies"
+
+        lessons_learned:
+          - "Document incident details"
+          - "Update response procedures"
+          - "Implement preventive measures"

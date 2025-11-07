@@ -1,0 +1,463 @@
+# Istio Service Mesh Configuration for CarRental SaaS
+# This file configures Istio for advanced microservices capabilities
+
+# First, create the istio-system namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  labels:
+    app.kubernetes.io/name: istio-system
+    app.kubernetes.io/part-of: carrental-saas
+
+---
+# Enable Istio injection for our namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental
+  labels:
+    istio-injection: enabled
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/part-of: carrental-saas
+
+---
+# Istio Gateway for external traffic
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: carrental-gateway
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-gateway
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    istio: ingressgateway # Use Istio default controller
+  servers:
+  # HTTP traffic (will redirect to HTTPS)
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - carrental.com
+    - www.carrental.com
+    - api.carrental.com
+    tls:
+      httpsRedirect: true
+  # HTTPS traffic
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - carrental.com
+    - www.carrental.com
+    - api.carrental.com
+    tls:
+      mode: SIMPLE
+      credentialName: carrental-tls-secret
+
+---
+# Virtual Service for traffic routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-virtualservice
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-virtualservice
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental.com
+  - www.carrental.com
+  - api.carrental.com
+  gateways:
+  - carrental-gateway
+  http:
+  # Redirect www to main domain
+  - match:
+    - headers:
+        ":authority":
+          exact: www.carrental.com
+    redirect:
+      authority: carrental.com
+      redirectCode: 301
+
+  # API routes
+  - match:
+    - headers:
+        ":authority":
+          exact: api.carrental.com
+      uri:
+        prefix: /api/v1
+    route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8083
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+
+  # Health check routes for backend
+  - match:
+    - headers:
+        ":authority":
+          exact: api.carrental.com
+      uri:
+        prefix: /actuator
+    route:
+    - destination:
+        host: carrental-backend-service
+        port:
+          number: 8081
+    timeout: 10s
+
+  # Frontend routes (default)
+  - match:
+    - headers:
+        ":authority":
+          exact: carrental.com
+    route:
+    - destination:
+        host: nginx-proxy-service
+        port:
+          number: 80
+    timeout: 30s
+
+---
+# Destination Rules for load balancing and circuit breaking
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-destinationrule
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-destinationrule
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  trafficPolicy:
+    # Load balancing algorithm
+    loadBalancer:
+      simple: LEAST_CONN
+    # Connection pooling
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+        minHealthPercent: 50
+    # Circuit breaker
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+      splitExternalLocalOriginErrors: false
+  portLevelSettings:
+  - port:
+      number: 8083
+    connectionPool:
+      tcp:
+        maxConnections: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-frontend-destinationrule
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend-destinationrule
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: nginx-proxy-service
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 32
+        maxRequestsPerConnection: 5
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: postgres-destinationrule
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-destinationrule
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: postgres-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 20
+        connectTimeout: 10s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: redis-destinationrule
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-destinationrule
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: redis-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 30
+        connectTimeout: 5s
+
+---
+# Service Entry for external dependencies
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: stripe-api
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: stripe-api-serviceentry
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - api.stripe.com
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: smtp-gmail
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: smtp-gmail-serviceentry
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - smtp.gmail.com
+  ports:
+  - number: 587
+    name: smtp
+    protocol: TCP
+  - number: 465
+    name: smtps
+    protocol: TCP
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Authorization Policy for security
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: carrental-backend-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  rules:
+  # Allow frontend to access backend
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/default"]
+    to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/v1/*"]
+
+  # Allow health checks
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/actuator/health", "/actuator/health/*"]
+
+  # Allow Prometheus scraping
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/prometheus-service-account"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/actuator/prometheus"]
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: postgres-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  rules:
+  # Only backend can access database
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/default"]
+    to:
+    - operation:
+        ports: ["5432"]
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: redis-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  rules:
+  # Only backend can access cache
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/default"]
+    to:
+    - operation:
+        ports: ["6379"]
+
+---
+# Telemetry configuration for observability
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-metrics
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        destination_app:
+          value: "carrental"
+        source_app:
+          value: "carrental"
+
+---
+# RequestAuthentication for JWT tokens
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: carrental-jwt-auth
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-jwt-auth
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  jwtRules:
+  - issuer: "carrental-saas"
+    jwksUri: "http://carrental-backend-service:8083/.well-known/jwks.json"
+    audiences:
+    - "carrental-api"
+    fromHeaders:
+    - name: Authorization
+      prefix: "Bearer "
+    fromParams:
+    - "token"
+
+---
+# Envoy Filter for advanced customizations
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: carrental-ratelimit
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-ratelimit
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  workloadSelector:
+    labels:
+      app.kubernetes.io/name: carrental-backend
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: local_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 100
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED

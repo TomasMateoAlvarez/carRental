@@ -1,0 +1,379 @@
+# Horizontal Pod Autoscaler for Backend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: carrental-backend-hpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-backend-deployment
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  # Custom metrics for request rate
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+
+---
+# Horizontal Pod Autoscaler for Frontend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: carrental-frontend-hpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-frontend-deployment
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+
+---
+# Horizontal Pod Autoscaler for Nginx Proxy
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-proxy-hpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: nginx-proxy
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-proxy-deployment
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# Vertical Pod Autoscaler for PostgreSQL (Optional)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: postgres-vpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: postgres-deployment
+  updatePolicy:
+    updateMode: "Auto"  # Can be "Off", "Initial", or "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: postgres
+      minAllowed:
+        cpu: 200m
+        memory: 256Mi
+      maxAllowed:
+        cpu: 2000m
+        memory: 4Gi
+      controlledResources: ["cpu", "memory"]
+
+---
+# Vertical Pod Autoscaler for Redis (Optional)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: redis-vpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: autoscaler
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: redis-deployment
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: redis
+      minAllowed:
+        cpu: 100m
+        memory: 64Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 512Mi
+      controlledResources: ["cpu", "memory"]
+
+---
+# Pod Disruption Budget for Backend
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carrental-backend-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  minAvailable: 2  # Ensure at least 2 pods are always available
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+      app.kubernetes.io/component: backend
+
+---
+# Pod Disruption Budget for Frontend
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carrental-frontend-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  minAvailable: 1  # Ensure at least 1 pod is always available
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-frontend
+      app.kubernetes.io/component: frontend
+
+---
+# Pod Disruption Budget for Nginx Proxy
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-proxy-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: nginx-proxy
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-proxy
+      app.kubernetes.io/component: proxy
+
+---
+# Pod Disruption Budget for PostgreSQL
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  minAvailable: 1  # Database must always have 1 instance running
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/component: database
+
+---
+# Pod Disruption Budget for Redis
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  minAvailable: 1  # Cache must always have 1 instance running
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+      app.kubernetes.io/component: cache
+
+---
+# Resource Quota for the namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: carrental-resource-quota
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: quota
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hard:
+    # Compute resources
+    requests.cpu: "4"      # 4 CPU cores total requests
+    requests.memory: 8Gi   # 8GB memory total requests
+    limits.cpu: "8"        # 8 CPU cores total limits
+    limits.memory: 16Gi    # 16GB memory total limits
+
+    # Storage resources
+    requests.storage: 200Gi  # 200GB total storage
+    persistentvolumeclaims: "10"  # Maximum 10 PVCs
+
+    # Object counts
+    count/pods: "30"                    # Maximum 30 pods
+    count/services: "15"                # Maximum 15 services
+    count/secrets: "20"                 # Maximum 20 secrets
+    count/configmaps: "15"              # Maximum 15 configmaps
+    count/persistentvolumeclaims: "10"  # Maximum 10 PVCs
+    count/services.loadbalancers: "5"   # Maximum 5 LoadBalancer services
+
+---
+# Limit Range for pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: carrental-limit-range
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: limits
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  limits:
+  # Container limits
+  - type: Container
+    default:
+      cpu: 500m      # Default CPU limit
+      memory: 512Mi  # Default memory limit
+    defaultRequest:
+      cpu: 100m      # Default CPU request
+      memory: 128Mi  # Default memory request
+    min:
+      cpu: 50m       # Minimum CPU
+      memory: 64Mi   # Minimum memory
+    max:
+      cpu: 2000m     # Maximum CPU
+      memory: 4Gi    # Maximum memory
+
+  # Pod limits
+  - type: Pod
+    max:
+      cpu: 4000m     # Maximum CPU per pod
+      memory: 8Gi    # Maximum memory per pod
+
+  # PVC limits
+  - type: PersistentVolumeClaim
+    min:
+      storage: 1Gi   # Minimum storage
+    max:
+      storage: 100Gi # Maximum storage per PVC

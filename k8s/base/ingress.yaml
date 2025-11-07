@@ -1,0 +1,281 @@
+# Ingress Controller Configuration for CarRental SaaS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carrental-ingress
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    # Nginx Ingress Controller annotations
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Rate limiting and security
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+
+    # CORS configuration
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://carrental.com,https://www.carrental.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+    nginx.ingress.kubernetes.io/cors-expose-headers: "Content-Length,Content-Range"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self'; object-src 'none'; frame-ancestors 'self';" always;
+
+    # Client body size for file uploads
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+
+    # Load balancing
+    nginx.ingress.kubernetes.io/load-balance: "round_robin"
+
+    # Session affinity for stateful operations
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "carrental-affinity"
+    nginx.ingress.kubernetes.io/session-cookie-expires: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "86400"
+    nginx.ingress.kubernetes.io/session-cookie-path: "/"
+
+    # Health checks
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$binary_remote_addr"
+
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Certificate management (cert-manager)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/acme-challenge-type: "http01"
+spec:
+  tls:
+  - hosts:
+    - carrental.com
+    - www.carrental.com
+    - api.carrental.com
+    secretName: carrental-tls-secret
+
+  rules:
+  # Main frontend application
+  - host: carrental.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+
+  # www redirect to main domain
+  - host: www.carrental.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+
+  # API subdomain for backend services
+  - host: api.carrental.com
+    http:
+      paths:
+      # Backend API routes
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8083
+
+      # Health check endpoints
+      - path: /actuator/health
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8081
+
+      # Metrics endpoint for monitoring
+      - path: /actuator/prometheus
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8081
+
+---
+# Network Policy for additional security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: carrental-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}  # Apply to all pods in namespace
+  policyTypes:
+  - Ingress
+  - Egress
+
+  ingress:
+  # Allow ingress from nginx ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8081
+
+  # Allow internal communication within namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: carrental
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 5432  # PostgreSQL
+    - protocol: TCP
+      port: 6379  # Redis
+
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+  # Allow HTTPS for external APIs (Stripe, email services)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 587  # SMTP
+    - protocol: TCP
+      port: 25   # SMTP
+
+  # Allow internal database and cache communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: database
+    ports:
+    - protocol: TCP
+      port: 5432
+
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: cache
+    ports:
+    - protocol: TCP
+      port: 6379
+
+---
+# ServiceMonitor for Prometheus metrics collection
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: carrental-backend-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+      app.kubernetes.io/component: backend
+  endpoints:
+  - port: management
+    path: /actuator/prometheus
+    interval: 30s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - carrental
+
+---
+# Certificate Issuer for Let's Encrypt
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@carrental.com  # Change to your email
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+      selector:
+        dnsZones:
+        - "carrental.com"
+
+---
+# Staging Certificate Issuer for testing
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@carrental.com  # Change to your email
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+      selector:
+        dnsZones:
+        - "carrental.com"

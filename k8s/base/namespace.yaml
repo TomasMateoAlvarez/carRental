@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental
+  labels:
+    name: carrental
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/part-of: carrental-saas
+    app.kubernetes.io/managed-by: kubernetes
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental-staging
+  labels:
+    name: carrental-staging
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/part-of: carrental-saas
+    app.kubernetes.io/managed-by: kubernetes
+    environment: staging
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: carrental-production
+  labels:
+    name: carrental-production
+    app.kubernetes.io/name: carrental
+    app.kubernetes.io/part-of: carrental-saas
+    app.kubernetes.io/managed-by: kubernetes
+    environment: production

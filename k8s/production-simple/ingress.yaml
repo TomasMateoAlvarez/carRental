@@ -1,0 +1,196 @@
+# Ingress with SSL/TLS - Production Simple
+# Automatic SSL certificate management with cert-manager
+
+# cert-manager Issuer for Let's Encrypt
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt-prod
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: letsencrypt-prod
+    app.kubernetes.io/component: ssl
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  acme:
+    # Let's Encrypt production server
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@yourdomain.com  # CHANGE THIS to your email
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+    # HTTP-01 challenge
+    - http01:
+        ingress:
+          class: nginx
+
+---
+# Main Ingress for Frontend and API
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carrental-ingress
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-ingress
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    # Nginx ingress controller
+    kubernetes.io/ingress.class: "nginx"
+
+    # SSL configuration
+    cert-manager.io/issuer: "letsencrypt-prod"
+
+    # Security headers
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header X-XSS-Protection "1; mode=block" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self'; object-src 'none'; child-src 'none'; worker-src 'none'; frame-ancestors 'self'; form-action 'self'; base-uri 'self'; manifest-src 'self';" always;
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-burst: "50"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+
+    # Body size limit
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "30"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "30"
+
+    # Enable CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://carrental.yourdomain.com,https://www.carrental.yourdomain.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Authorization, Content-Type, Accept, Origin, User-Agent, DNT, Cache-Control, X-Mx-ReqToken, Keep-Alive, X-Requested-With, If-Modified-Since"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+
+spec:
+  tls:
+  - hosts:
+    - carrental.yourdomain.com      # CHANGE THIS to your domain
+    - www.carrental.yourdomain.com  # CHANGE THIS to your domain
+    - api.carrental.yourdomain.com  # CHANGE THIS to your domain
+    secretName: carrental-tls-secret
+
+  rules:
+  # Main frontend domain
+  - host: carrental.yourdomain.com    # CHANGE THIS to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-frontend-service
+            port:
+              number: 80
+
+  # WWW redirect
+  - host: www.carrental.yourdomain.com  # CHANGE THIS to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-frontend-service
+            port:
+              number: 80
+
+  # API subdomain
+  - host: api.carrental.yourdomain.com  # CHANGE THIS to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8083
+
+---
+# Redirect from www to main domain
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carrental-www-redirect
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-www-redirect
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/permanent-redirect: "https://carrental.yourdomain.com$request_uri"  # CHANGE THIS
+spec:
+  tls:
+  - hosts:
+    - www.carrental.yourdomain.com  # CHANGE THIS to your domain
+    secretName: carrental-tls-secret
+  rules:
+  - host: www.carrental.yourdomain.com  # CHANGE THIS to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-frontend-service
+            port:
+              number: 80
+
+---
+# Network Policy for Ingress (basic security)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-network-policy
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: ingress-network-policy
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: carrental-saas
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow HTTP and HTTPS traffic
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 8083
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow internal communication
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/part-of: carrental-saas
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 5432

@@ -1,0 +1,509 @@
+# External DNS Configuration for CarRental SaaS
+# Automatic DNS management for Kubernetes ingresses and services
+
+# ServiceAccount for ExternalDNS
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: external-dns
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    # AWS IAM role annotation (uncomment for AWS)
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT-ID:role/external-dns-role
+    # GCP service account annotation (uncomment for GCP)
+    # iam.gke.io/gcp-service-account: external-dns@PROJECT-ID.iam.gserviceaccount.com
+
+---
+# ClusterRole for ExternalDNS
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: external-dns
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+- apiGroups: [""]
+  resources: ["services", "endpoints"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["gateways", "virtualservices"]
+  verbs: ["get", "watch", "list"]
+
+---
+# ClusterRoleBinding for ExternalDNS
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: external-dns-viewer
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: external-dns
+subjects:
+- kind: ServiceAccount
+  name: external-dns
+  namespace: carrental
+
+---
+# ExternalDNS Deployment for AWS Route53
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-dns-aws
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns-aws
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns-aws
+      app.kubernetes.io/component: dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: external-dns-aws
+        app.kubernetes.io/component: dns
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: external-dns
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: external-dns
+        image: k8s.gcr.io/external-dns/external-dns:v0.13.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - --source=service
+        - --source=ingress
+        - --source=istio-gateway
+        - --source=istio-virtualservice
+        - --domain-filter=carrental.com  # Replace with your domain
+        - --provider=aws
+        - --policy=sync  # Change to 'upsert-only' for safety
+        - --aws-zone-type=public
+        - --registry=txt
+        - --txt-owner-id=carrental-k8s
+        - --txt-prefix=carrental-
+        - --interval=1m
+        - --log-format=text
+        - --log-level=info
+        - --metrics-address=0.0.0.0:7979
+        - --aws-prefer-cname
+        env:
+        # AWS credentials (use IAM roles in production)
+        - name: AWS_DEFAULT_REGION
+          value: "us-east-1"  # Change to your region
+        # Uncomment for static credentials (NOT recommended for production)
+        # - name: AWS_ACCESS_KEY_ID
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-credentials
+        #       key: access-key-id
+        # - name: AWS_SECRET_ACCESS_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-credentials
+        #       key: secret-access-key
+        ports:
+        - containerPort: 7979
+          name: metrics
+          protocol: TCP
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+
+---
+# ExternalDNS Deployment for Google Cloud DNS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-dns-gcp
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns-gcp
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 0  # Set to 1 to enable GCP DNS
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns-gcp
+      app.kubernetes.io/component: dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: external-dns-gcp
+        app.kubernetes.io/component: dns
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: external-dns
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: external-dns
+        image: k8s.gcr.io/external-dns/external-dns:v0.13.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - --source=service
+        - --source=ingress
+        - --source=istio-gateway
+        - --source=istio-virtualservice
+        - --domain-filter=carrental.com  # Replace with your domain
+        - --provider=google
+        - --policy=sync
+        - --registry=txt
+        - --txt-owner-id=carrental-k8s
+        - --txt-prefix=carrental-
+        - --interval=1m
+        - --log-format=text
+        - --log-level=info
+        - --metrics-address=0.0.0.0:7979
+        env:
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /etc/secrets/service-account/credentials.json
+        ports:
+        - containerPort: 7979
+          name: metrics
+          protocol: TCP
+        volumeMounts:
+        - name: google-service-account
+          mountPath: /etc/secrets/service-account
+          readOnly: true
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+      volumes:
+      - name: google-service-account
+        secret:
+          secretName: google-service-account
+          optional: true
+
+---
+# ExternalDNS Deployment for Azure DNS
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-dns-azure
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns-azure
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 0  # Set to 1 to enable Azure DNS
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns-azure
+      app.kubernetes.io/component: dns
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: external-dns-azure
+        app.kubernetes.io/component: dns
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: external-dns
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: external-dns
+        image: k8s.gcr.io/external-dns/external-dns:v0.13.6
+        imagePullPolicy: IfNotPresent
+        args:
+        - --source=service
+        - --source=ingress
+        - --source=istio-gateway
+        - --source=istio-virtualservice
+        - --domain-filter=carrental.com  # Replace with your domain
+        - --provider=azure
+        - --policy=sync
+        - --registry=txt
+        - --txt-owner-id=carrental-k8s
+        - --txt-prefix=carrental-
+        - --interval=1m
+        - --log-format=text
+        - --log-level=info
+        - --metrics-address=0.0.0.0:7979
+        env:
+        - name: AZURE_SUBSCRIPTION_ID
+          valueFrom:
+            secretKeyRef:
+              name: azure-credentials
+              key: subscription-id
+              optional: true
+        - name: AZURE_TENANT_ID
+          valueFrom:
+            secretKeyRef:
+              name: azure-credentials
+              key: tenant-id
+              optional: true
+        - name: AZURE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: azure-credentials
+              key: client-id
+              optional: true
+        - name: AZURE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: azure-credentials
+              key: client-secret
+              optional: true
+        - name: AZURE_RESOURCE_GROUP
+          value: "carrental-rg"  # Replace with your resource group
+        ports:
+        - containerPort: 7979
+          name: metrics
+          protocol: TCP
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 7979
+          initialDelaySeconds: 5
+          timeoutSeconds: 5
+
+---
+# Service for ExternalDNS metrics
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-dns-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "7979"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 7979
+    targetPort: 7979
+    protocol: TCP
+    name: metrics
+  selector:
+    app.kubernetes.io/component: dns
+
+---
+# ServiceMonitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: external-dns-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-dns
+      app.kubernetes.io/component: dns
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - carrental
+
+---
+# Example DNS Records Secret for AWS (template)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-credentials
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+type: Opaque
+data:
+  # Base64 encoded AWS credentials (NOT for production use)
+  # Use IAM roles or IRSA instead
+  access-key-id: ""     # echo -n "YOUR_ACCESS_KEY_ID" | base64
+  secret-access-key: "" # echo -n "YOUR_SECRET_ACCESS_KEY" | base64
+
+---
+# Example DNS Records Secret for GCP (template)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: google-service-account
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+type: Opaque
+data:
+  # Base64 encoded GCP service account JSON
+  credentials.json: ""  # base64 encoded service account JSON
+
+---
+# Example DNS Records Secret for Azure (template)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: azure-credentials
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+type: Opaque
+data:
+  # Base64 encoded Azure credentials
+  subscription-id: ""  # echo -n "YOUR_SUBSCRIPTION_ID" | base64
+  tenant-id: ""        # echo -n "YOUR_TENANT_ID" | base64
+  client-id: ""        # echo -n "YOUR_CLIENT_ID" | base64
+  client-secret: ""    # echo -n "YOUR_CLIENT_SECRET" | base64
+
+---
+# NetworkPolicy for ExternalDNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: external-dns-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: dns
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow metrics scraping from Prometheus
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 7979
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow HTTPS for cloud APIs
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow Kubernetes API access
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6443

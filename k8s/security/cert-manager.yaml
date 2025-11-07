@@ -1,0 +1,541 @@
+# Certificate Management for CarRental SaaS
+# Automated TLS/SSL certificate management with cert-manager
+
+# Namespace for cert-manager (if not using Helm)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/instance: cert-manager
+    app.kubernetes.io/part-of: carrental-saas
+
+---
+# ClusterIssuer for Let's Encrypt production
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: letsencrypt-prod
+    app.kubernetes.io/component: certificate-issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  acme:
+    # Let's Encrypt production server
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@carrental.com  # Replace with your email
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+    # HTTP-01 challenge solver
+    - http01:
+        ingress:
+          class: nginx
+          podTemplate:
+            spec:
+              nodeSelector:
+                "kubernetes.io/os": linux
+    # DNS-01 challenge solver for AWS Route53
+    - dns01:
+        route53:
+          region: us-east-1
+          accessKeyID: AKIA...  # Use secret reference in production
+          secretAccessKeySecretRef:
+            name: route53-credentials
+            key: secret-access-key
+        selector:
+          dnsZones:
+          - "carrental.com"
+          - "*.carrental.com"
+    # DNS-01 challenge solver for Google Cloud DNS
+    - dns01:
+        cloudDNS:
+          project: carrental-project-id
+          serviceAccountSecretRef:
+            name: clouddns-dns01-solver-svc-acct
+            key: key.json
+        selector:
+          dnsZones:
+          - "carrental.com"
+
+---
+# ClusterIssuer for Let's Encrypt staging (for testing)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: letsencrypt-staging
+    app.kubernetes.io/component: certificate-issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: admin@carrental.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+    - dns01:
+        route53:
+          region: us-east-1
+          accessKeyID: AKIA...
+          secretAccessKeySecretRef:
+            name: route53-credentials
+            key: secret-access-key
+
+---
+# ClusterIssuer for internal CA (for mTLS and internal services)
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: carrental-internal-ca
+  labels:
+    app.kubernetes.io/name: carrental-internal-ca
+    app.kubernetes.io/component: certificate-issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  ca:
+    secretName: carrental-ca-secret
+
+---
+# Self-signed issuer for creating the internal CA
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+  labels:
+    app.kubernetes.io/name: selfsigned-issuer
+    app.kubernetes.io/component: certificate-issuer
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selfSigned: {}
+
+---
+# Root CA certificate for internal services
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: carrental-root-ca
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: carrental-root-ca
+    app.kubernetes.io/component: root-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  isCA: true
+  commonName: "CarRental Internal Root CA"
+  subject:
+    organizationalUnits:
+    - "CarRental SaaS"
+    organizations:
+    - "CarRental Technologies"
+    countries:
+    - "US"
+    localities:
+    - "San Francisco"
+    provinces:
+    - "CA"
+  secretName: carrental-ca-secret
+  duration: 8760h  # 1 year
+  renewBefore: 720h  # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 4096
+  issuerRef:
+    name: selfsigned-issuer
+    kind: ClusterIssuer
+
+---
+# Production TLS certificate for main domain
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: carrental-tls-cert
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-tls-cert
+    app.kubernetes.io/component: tls-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  secretName: carrental-tls-secret
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - carrental.com
+  - www.carrental.com
+  - api.carrental.com
+  - admin.carrental.com
+  - dashboard.carrental.com
+  duration: 2160h  # 90 days
+  renewBefore: 720h  # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+
+---
+# Wildcard certificate for subdomains
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: carrental-wildcard-cert
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-wildcard-cert
+    app.kubernetes.io/component: wildcard-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  secretName: carrental-wildcard-tls-secret
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - "*.carrental.com"
+  - carrental.com
+  duration: 2160h  # 90 days
+  renewBefore: 720h  # 30 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+# Internal mTLS certificate for backend services
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: carrental-backend-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-mtls
+    app.kubernetes.io/component: mtls-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  secretName: carrental-backend-mtls-secret
+  issuerRef:
+    name: carrental-internal-ca
+    kind: ClusterIssuer
+  subject:
+    organizationalUnits:
+    - "Backend Services"
+  commonName: "carrental-backend.carrental.svc.cluster.local"
+  dnsNames:
+  - carrental-backend-service
+  - carrental-backend-service.carrental
+  - carrental-backend-service.carrental.svc
+  - carrental-backend-service.carrental.svc.cluster.local
+  - localhost
+  ipAddresses:
+  - 127.0.0.1
+  duration: 8760h  # 1 year
+  renewBefore: 2160h  # 90 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+  - client auth
+
+---
+# Internal mTLS certificate for database
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: postgres-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-mtls
+    app.kubernetes.io/component: mtls-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  secretName: postgres-mtls-secret
+  issuerRef:
+    name: carrental-internal-ca
+    kind: ClusterIssuer
+  subject:
+    organizationalUnits:
+    - "Database Services"
+  commonName: "postgres.carrental.svc.cluster.local"
+  dnsNames:
+  - postgres-service
+  - postgres-service.carrental
+  - postgres-service.carrental.svc
+  - postgres-service.carrental.svc.cluster.local
+  duration: 8760h  # 1 year
+  renewBefore: 2160h  # 90 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+  - digital signature
+  - key encipherment
+  - server auth
+  - client auth
+
+---
+# Certificate for monitoring services
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: monitoring-tls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: monitoring-tls
+    app.kubernetes.io/component: monitoring-certificate
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  secretName: monitoring-tls-secret
+  issuerRef:
+    name: carrental-internal-ca
+    kind: ClusterIssuer
+  subject:
+    organizationalUnits:
+    - "Monitoring Services"
+  dnsNames:
+  - prometheus-service.carrental.svc.cluster.local
+  - grafana-service.carrental.svc.cluster.local
+  - alertmanager-service.carrental.svc.cluster.local
+  duration: 8760h  # 1 year
+  renewBefore: 2160h  # 90 days
+  privateKey:
+    algorithm: RSA
+    size: 2048
+
+---
+# AWS Route53 credentials secret (template)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: route53-credentials
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: route53-credentials
+    app.kubernetes.io/component: dns-credentials
+    app.kubernetes.io/part-of: carrental-saas
+type: Opaque
+data:
+  secret-access-key: ""  # Base64 encoded AWS secret access key
+
+---
+# Google Cloud DNS credentials secret (template)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clouddns-dns01-solver-svc-acct
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: clouddns-dns01-solver-svc-acct
+    app.kubernetes.io/component: dns-credentials
+    app.kubernetes.io/part-of: carrental-saas
+type: Opaque
+data:
+  key.json: ""  # Base64 encoded GCP service account JSON key
+
+---
+# RBAC for cert-manager
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: carrental-saas
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cert-manager-controller
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets", "events", "services", "pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates", "certificaterequests", "orders", "challenges"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["cert-manager.io"]
+  resources: ["certificates/status", "certificaterequests/status", "challenges/status"]
+  verbs: ["update"]
+- apiGroups: ["acme.cert-manager.io"]
+  resources: ["challenges", "orders"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cert-manager-controller
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: carrental-saas
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-manager-controller
+subjects:
+- kind: ServiceAccount
+  name: cert-manager
+  namespace: cert-manager
+
+---
+# Certificate monitoring and alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cert-manager-alerts
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager-alerts
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  groups:
+  - name: cert-manager
+    rules:
+    - alert: CertificateExpiringSoon
+      expr: |
+        certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 30
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} is expiring soon"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} will expire in less than 30 days"
+
+    - alert: CertificateNotReady
+      expr: |
+        certmanager_certificate_ready_status{condition="False"} == 1
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} is not ready"
+        description: "Certificate {{ $labels.name }} in namespace {{ $labels.namespace }} has been in a not-ready state for more than 10 minutes"
+
+    - alert: CertificateRenewalFailed
+      expr: |
+        increase(certmanager_controller_sync_call_count{result="error"}[1h]) > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Certificate renewal has failed"
+        description: "Certificate manager controller has reported errors in the last hour"
+
+---
+# Network policy for cert-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cert-manager-network-policy
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: cert-manager-network-policy
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow webhook traffic
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 9443
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow HTTPS for ACME challenges and cloud APIs
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow HTTP for ACME HTTP-01 challenges
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 80
+  # Allow Kubernetes API access
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6443
+
+---
+# Certificate auto-renewal job
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: certificate-renewal-check
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/name: certificate-renewal-check
+    app.kubernetes.io/component: maintenance
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: certificate-renewal-check
+        spec:
+          serviceAccountName: cert-manager
+          restartPolicy: OnFailure
+          containers:
+          - name: renewal-check
+            image: bitnami/kubectl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Checking certificate status..."
+              kubectl get certificates -A -o wide
+
+              echo "Checking for certificates expiring soon..."
+              kubectl get certificates -A -o json | jq -r '
+                .items[] |
+                select(.status.notAfter != null) |
+                select(((.status.notAfter | fromdateiso8601) - now) < (30 * 24 * 3600)) |
+                "\(.metadata.namespace)/\(.metadata.name) expires \(.status.notAfter)"
+              '
+
+              echo "Triggering renewal for certificates expiring soon..."
+              kubectl annotate certificates -A cert-manager.io/force-renew="$(date +%s)" --overwrite
+            resources:
+              requests:
+                cpu: 10m
+                memory: 32Mi
+              limits:
+                cpu: 50m
+                memory: 64Mi

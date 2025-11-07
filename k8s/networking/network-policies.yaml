@@ -1,0 +1,476 @@
+# Network Policies for CarRental SaaS
+# Advanced network segmentation and traffic control
+
+# Default deny all ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-ingress
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: default-deny-all-ingress
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+
+---
+# Default deny all egress traffic (except DNS)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-egress-allow-dns
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: default-deny-egress-allow-dns
+    app.kubernetes.io/component: security
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}
+  policyTypes:
+  - Egress
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow access to Kubernetes API
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6443
+
+---
+# Network Policy for Frontend (NGINX Proxy)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: frontend-network-policy
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-proxy
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from Istio ingress gateway
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+  # Allow health checks from load balancer
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow access to backend services
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: carrental-backend
+    ports:
+    - protocol: TCP
+      port: 8083
+
+---
+# Network Policy for Backend Application
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: backend-network-policy
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from frontend
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: nginx-proxy
+    ports:
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8081
+  # Allow traffic from Istio ingress gateway
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 8083
+    - protocol: TCP
+      port: 8081
+  # Allow Prometheus scraping
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 8081
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow access to PostgreSQL
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow access to Redis
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow external API calls (Stripe, Email)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 587
+    - protocol: TCP
+      port: 465
+
+---
+# Network Policy for PostgreSQL Database
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-network-policy
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Only allow backend to connect
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: carrental-backend
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow backup operations
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: backup-job
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  # Allow DNS only
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Network Policy for Redis Cache
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-network-policy
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Only allow backend to connect
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: carrental-backend
+    ports:
+    - protocol: TCP
+      port: 6379
+  egress:
+  # Allow DNS only
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Network Policy for Monitoring Stack (Prometheus/Grafana)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: monitoring-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: monitoring-network-policy
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: monitoring
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow access from Istio gateway for Grafana UI
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 9090
+  # Allow Prometheus to scrape metrics
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 9090
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow scraping all services
+  - to:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 9187
+    - protocol: TCP
+      port: 9121
+
+---
+# Network Policy for External DNS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: external-dns-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: external-dns-network-policy
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: dns
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow metrics scraping
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - protocol: TCP
+      port: 7979
+  egress:
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Allow HTTPS for cloud APIs
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow Kubernetes API access
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 6443
+
+---
+# Network Policy for Istio System Namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: istio-system-network-policy
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: istio-system-network-policy
+    app.kubernetes.io/component: service-mesh
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow all traffic within istio-system
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow traffic from carrental namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: carrental
+  # Allow external traffic to ingress gateway
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 15021
+  egress:
+  # Allow all egress for service mesh operations
+  - to: []
+
+---
+# Network Policy for Cross-Namespace Communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cross-namespace-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: cross-namespace-policy
+    app.kubernetes.io/component: networking
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow traffic from istio-system
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow traffic from kube-system (for health checks)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8081
+  egress:
+  # Allow traffic to istio-system
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow traffic to kube-system (for DNS, etc.)
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# Network Policy for Development Environment (Optional)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: development-relaxed-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: development-relaxed-policy
+    app.kubernetes.io/component: development
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    environment: "development"
+spec:
+  podSelector:
+    matchLabels:
+      environment: development
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow all ingress in development
+  - from: []
+  egress:
+  # Allow all egress in development
+  - to: []

@@ -1,0 +1,419 @@
+# AWS Cloud Integration for CarRental SaaS
+# This file contains AWS-specific configurations
+
+# AWS Load Balancer Controller ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: aws-load-balancer-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT-ID:role/AmazonEKSLoadBalancerControllerRole
+
+---
+# AWS Load Balancer Controller ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aws-load-balancer-controller
+  labels:
+    app.kubernetes.io/name: aws-load-balancer-controller
+    app.kubernetes.io/part-of: carrental-saas
+rules:
+- apiGroups: ["", "extensions"]
+  resources: ["configmaps", "endpoints", "events", "ingresses", "ingresses/status", "services", "pods/status"]
+  verbs: ["create", "get", "list", "update", "watch", "patch"]
+- apiGroups: ["", "extensions"]
+  resources: ["nodes", "pods", "secrets", "services", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["extensions"]
+  resources: ["ingresses/status"]
+  verbs: ["update"]
+- apiGroups: ["elbv2.k8s.aws"]
+  resources: ["targetgroupbindings"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+
+---
+# AWS Load Balancer Controller ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aws-load-balancer-controller
+  labels:
+    app.kubernetes.io/name: aws-load-balancer-controller
+    app.kubernetes.io/part-of: carrental-saas
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aws-load-balancer-controller
+subjects:
+- kind: ServiceAccount
+  name: aws-load-balancer-controller
+  namespace: kube-system
+
+---
+# AWS Load Balancer Controller Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-load-balancer-controller
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: aws-load-balancer-controller
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aws-load-balancer-controller
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aws-load-balancer-controller
+        app.kubernetes.io/component: controller
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: aws-load-balancer-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: controller
+        image: amazon/aws-load-balancer-controller:v2.7.2
+        imagePullPolicy: IfNotPresent
+        args:
+        - --cluster-name=carrental-eks
+        - --ingress-class=alb
+        - --aws-vpc-id=vpc-xxxxxxxxx  # Replace with your VPC ID
+        - --aws-region=us-east-1      # Replace with your region
+        - --feature-gates=wafv2=true,shield=true,waf=true
+        - --enable-shield=true
+        - --enable-waf=true
+        - --enable-wafv2=true
+        - --log-level=info
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: us-east-1
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics-server
+          protocol: TCP
+        resources:
+          limits:
+            cpu: 200m
+            memory: 500Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /healthz
+            port: 61779
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          failureThreshold: 2
+          httpGet:
+            path: /readyz
+            port: 61779
+            scheme: HTTP
+          initialDelaySeconds: 10
+          timeoutSeconds: 10
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: aws-load-balancer-webhook-tls
+
+---
+# AWS Application Load Balancer for CarRental
+apiVersion: v1
+kind: Service
+metadata:
+  name: carrental-alb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-alb
+    app.kubernetes.io/component: loadbalancer
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "60"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-s3-bucket-name: "carrental-alb-logs"
+    service.beta.kubernetes.io/aws-load-balancer-access-log-s3-bucket-prefix: "carrental"
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  - port: 443
+    targetPort: 443
+    protocol: TCP
+    name: https
+  selector:
+    app.kubernetes.io/name: nginx-proxy
+    app.kubernetes.io/component: proxy
+
+---
+# AWS ALB Ingress for CarRental
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carrental-alb-ingress
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-alb-ingress
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT-ID:certificate/CERT-ID
+    alb.ingress.kubernetes.io/group.name: carrental
+    alb.ingress.kubernetes.io/group.order: '100'
+
+    # Security annotations
+    alb.ingress.kubernetes.io/security-groups: sg-xxxxxxxxx  # Replace with security group
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:us-east-1:ACCOUNT-ID:webacl/carrental-waf/WEB-ACL-ID
+    alb.ingress.kubernetes.io/shield-advanced-protection: 'true'
+
+    # Performance annotations
+    alb.ingress.kubernetes.io/load-balancer-attributes: |
+      idle_timeout.timeout_seconds=60,
+      routing.http2.enabled=true,
+      access_logs.s3.enabled=true,
+      access_logs.s3.bucket=carrental-alb-logs,
+      access_logs.s3.prefix=carrental
+
+    # Health check annotations
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
+spec:
+  rules:
+  - host: carrental.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+  - host: www.carrental.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+  - host: api.carrental.com
+    http:
+      paths:
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8083
+      - path: /actuator
+        pathType: Prefix
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8081
+
+---
+# AWS EBS CSI Driver StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: aws-ebs-gp3
+  labels:
+    app.kubernetes.io/name: aws-ebs-gp3
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"
+  iops: "3000"
+  throughput: "125"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# AWS EBS CSI Driver StorageClass for fast storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: aws-ebs-io2
+  labels:
+    app.kubernetes.io/name: aws-ebs-io2
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: ebs.csi.aws.com
+parameters:
+  type: io2
+  fsType: ext4
+  encrypted: "true"
+  iops: "10000"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# AWS EFS StorageClass for shared storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: aws-efs
+  labels:
+    app.kubernetes.io/name: aws-efs
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-xxxxxxxxx  # Replace with your EFS ID
+  directoryPerms: "700"
+  gid: "1001"
+  uid: "1001"
+mountOptions:
+- tls
+- iam
+reclaimPolicy: Retain
+
+---
+# AWS CloudWatch Container Insights configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-info
+  namespace: amazon-cloudwatch
+  labels:
+    app.kubernetes.io/name: cluster-info
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  cluster.name: carrental-eks
+  logs.region: us-east-1
+
+---
+# AWS Secrets Manager integration
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: aws-secrets-manager
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: aws-secrets-manager
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets-sa
+
+---
+# External Secret for database credentials
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: carrental-db-secret
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-db-secret
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  refreshInterval: 15s
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: carrental-backend-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        SPRING_DATASOURCE_PASSWORD: "{{ .dbpassword }}"
+        JWT_SECRET: "{{ .jwtsecret }}"
+        STRIPE_SECRET_KEY: "{{ .stripekey }}"
+  data:
+  - secretKey: dbpassword
+    remoteRef:
+      key: carrental/database
+      property: password
+  - secretKey: jwtsecret
+    remoteRef:
+      key: carrental/jwt
+      property: secret
+  - secretKey: stripekey
+    remoteRef:
+      key: carrental/stripe
+      property: secret_key
+
+---
+# AWS VPC CNI configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: amazon-vpc-cni
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: amazon-vpc-cni
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  enable-pod-eni: "true"
+  pod-security-group-enforcing-mode: "strict"
+  enable-prefix-delegation: "true"
+  warm-prefix-target: "1"
+  warm-ip-target: "3"

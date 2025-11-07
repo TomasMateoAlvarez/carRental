@@ -1,0 +1,518 @@
+# Advanced Load Balancing for CarRental SaaS
+# Sophisticated load balancing strategies based on real-time metrics
+
+# Global load balancer configuration
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-global-load-balancer
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-global-load-balancer
+    app.kubernetes.io/component: load-balancing
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: "*.carrental.svc.cluster.local"
+  trafficPolicy:
+    # Default load balancing strategy
+    loadBalancer:
+      localityLbSetting:
+        enabled: true
+        distribute:
+        - from: "region1/zone1/*"
+          to:
+            "region1/zone1/*": 70
+            "region1/zone2/*": 20
+            "region2/zone1/*": 10
+        - from: "region1/zone2/*"
+          to:
+            "region1/zone2/*": 70
+            "region1/zone1/*": 20
+            "region2/zone1/*": 10
+        failover:
+        - from: "region1"
+          to: "region2"
+        - from: "region2"
+          to: "region1"
+      simple: LEAST_CONN  # Global fallback strategy
+
+---
+# Backend service load balancing with health-based routing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-health-lb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-health-lb
+    app.kubernetes.io/component: load-balancing
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  trafficPolicy:
+    # Health-aware load balancing
+    loadBalancer:
+      consistentHash:
+        # Hash based on user session for stickiness
+        httpHeaderName: "x-session-id"
+        minimumRingSize: 1024
+    connectionPool:
+      tcp:
+        maxConnections: 200
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+          probes: 9
+      http:
+        http1MaxPendingRequests: 128
+        http2MaxRequests: 200
+        maxRequestsPerConnection: 20
+        maxRetries: 5
+        idleTimeout: 60s
+        h2UpgradePolicy: UPGRADE
+    # Health checking and circuit breaking
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+
+  # Port-specific configurations
+  portLevelSettings:
+  # API port (8083)
+  - port:
+      number: 8083
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 150
+        connectTimeout: 20s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 15
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 20s
+      baseEjectionTime: 20s
+
+  # Health check port (8081)
+  - port:
+      number: 8081
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 20
+        connectTimeout: 5s
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 5
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      interval: 10s
+      baseEjectionTime: 10s
+
+---
+# Database connection load balancing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: postgres-connection-lb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-connection-lb
+    app.kubernetes.io/component: load-balancing
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: postgres-service
+  trafficPolicy:
+    # Database connection pooling and load balancing
+    loadBalancer:
+      consistentHash:
+        # Database session affinity based on tenant
+        httpHeaderName: "x-tenant-id"
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        keepAlive:
+          time: 3600s
+          interval: 60s
+          probes: 3
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      interval: 60s
+      baseEjectionTime: 300s
+      maxEjectionPercent: 25
+      minHealthPercent: 75
+
+---
+# Redis cache load balancing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: redis-cache-lb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-cache-lb
+    app.kubernetes.io/component: load-balancing
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: redis-service
+  trafficPolicy:
+    # Cache-optimized load balancing
+    loadBalancer:
+      consistentHash:
+        # Cache key-based routing for better hit rates
+        httpHeaderName: "x-cache-key"
+        minimumRingSize: 512
+    connectionPool:
+      tcp:
+        maxConnections: 150
+        connectTimeout: 5s
+        keepAlive:
+          time: 1800s
+          interval: 30s
+          probes: 2
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      interval: 30s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 30
+
+---
+# Frontend nginx load balancing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: nginx-frontend-lb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: nginx-frontend-lb
+    app.kubernetes.io/component: load-balancing
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: nginx-proxy-service
+  trafficPolicy:
+    # Frontend-optimized load balancing
+    loadBalancer:
+      simple: ROUND_ROBIN  # Even distribution for static content
+    connectionPool:
+      tcp:
+        maxConnections: 300
+        connectTimeout: 10s
+        keepAlive:
+          time: 300s
+          interval: 30s
+      http:
+        http1MaxPendingRequests: 128
+        http2MaxRequests: 256
+        maxRequestsPerConnection: 50
+        idleTimeout: 120s
+        h2UpgradePolicy: UPGRADE
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 15s
+      maxEjectionPercent: 40
+
+---
+# Horizontal Pod Autoscaler for backend
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: carrental-backend-hpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-hpa
+    app.kubernetes.io/component: autoscaling
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-backend-deployment
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  # Custom metrics scaling
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  - type: Pods
+    pods:
+      metric:
+        name: database_connections_active
+      target:
+        type: AverageValue
+        averageValue: "50"
+  # Behavior configuration
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60  # 1 minute
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+      selectPolicy: Max
+
+---
+# Vertical Pod Autoscaler for resource optimization
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: carrental-backend-vpa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-vpa
+    app.kubernetes.io/component: autoscaling
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-backend-deployment
+  updatePolicy:
+    updateMode: "Auto"  # Automatically apply recommendations
+  resourcePolicy:
+    containerPolicies:
+    - containerName: carrental-backend
+      maxAllowed:
+        cpu: "4"
+        memory: "8Gi"
+      minAllowed:
+        cpu: "100m"
+        memory: "256Mi"
+      controlledResources: ["cpu", "memory"]
+      controlledValues: RequestsAndLimits
+
+---
+# Pod Disruption Budget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: carrental-backend-pdb
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-pdb
+    app.kubernetes.io/component: availability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  maxUnavailable: 25%  # Allow up to 25% of pods to be unavailable
+  unhealthyPodEvictionPolicy: AlwaysAllow
+
+---
+# ServiceMonitor for load balancing metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: carrental-load-balancing-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-load-balancing-metrics
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: carrental-saas
+  endpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    metricRelabelings:
+    # Enrich metrics with load balancing information
+    - sourceLabels: [__name__]
+      regex: 'istio_request_total'
+      targetLabel: load_balancer_metric
+      replacement: 'request_distribution'
+    - sourceLabels: [__name__]
+      regex: 'istio_request_duration_milliseconds'
+      targetLabel: load_balancer_metric
+      replacement: 'response_time_distribution'
+
+---
+# PrometheusRule for load balancing alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: carrental-load-balancing-alerts
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-load-balancing-alerts
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  groups:
+  - name: carrental.loadbalancing.rules
+    interval: 30s
+    rules:
+    # Load distribution imbalance
+    - alert: LoadBalancerImbalance
+      expr: |
+        (
+          max(rate(istio_requests_total{destination_service_name="carrental-backend-service"}[5m])) by (destination_workload) -
+          min(rate(istio_requests_total{destination_service_name="carrental-backend-service"}[5m])) by (destination_workload)
+        ) /
+        avg(rate(istio_requests_total{destination_service_name="carrental-backend-service"}[5m])) by (destination_workload) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+        component: load-balancer
+      annotations:
+        summary: "Load balancer showing significant imbalance"
+        description: "Load distribution is imbalanced by more than 50% across backend instances"
+
+    # Circuit breaker activation
+    - alert: CircuitBreakerOpen
+      expr: |
+        increase(envoy_cluster_outlier_detection_ejections_active[1m]) > 0
+      for: 1m
+      labels:
+        severity: critical
+        component: circuit-breaker
+      annotations:
+        summary: "Circuit breaker has been activated"
+        description: "Circuit breaker for {{ $labels.cluster_name }} has ejected unhealthy instances"
+
+    # Connection pool exhaustion
+    - alert: ConnectionPoolExhaustion
+      expr: |
+        (
+          envoy_cluster_upstream_cx_active / envoy_cluster_upstream_cx_max
+        ) > 0.9
+      for: 2m
+      labels:
+        severity: warning
+        component: connection-pool
+      annotations:
+        summary: "Connection pool nearly exhausted"
+        description: "Connection pool for {{ $labels.cluster_name }} is {{ $value | humanizePercentage }} full"
+
+    # Auto-scaling recommendations
+    - alert: HighCPUUtilization
+      expr: |
+        avg(rate(container_cpu_usage_seconds_total{namespace="carrental",pod=~"carrental-backend-.*"}[5m])) by (pod) > 0.8
+      for: 3m
+      labels:
+        severity: warning
+        component: autoscaling
+      annotations:
+        summary: "High CPU utilization detected"
+        description: "Pod {{ $labels.pod }} has high CPU utilization: {{ $value | humanizePercentage }}"
+
+    - alert: ScalingEventFrequent
+      expr: |
+        increase(kube_horizontalpodautoscaler_status_current_replicas[15m]) > 5 or
+        increase(kube_horizontalpodautoscaler_status_current_replicas[15m]) < -5
+      for: 5m
+      labels:
+        severity: info
+        component: autoscaling
+      annotations:
+        summary: "Frequent scaling events detected"
+        description: "HPA {{ $labels.horizontalpodautoscaler }} has scaled more than 5 replicas in 15 minutes"
+
+---
+# Custom metrics for advanced load balancing
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-balancing-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: load-balancing-config
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  # Load balancing algorithms configuration
+  algorithms.yaml: |
+    algorithms:
+      # Business hours configuration
+      business_hours:
+        peak_hours: "09:00-17:00"
+        off_hours: "17:01-08:59"
+        weekend: "saturday,sunday"
+
+      # Geographic regions
+      regions:
+        americas: ["US", "CA", "MX", "BR", "AR"]
+        europe: ["DE", "FR", "IT", "ES", "UK", "NL"]
+        apac: ["JP", "AU", "SG", "KR", "IN", "CN"]
+
+      # Customer tiers
+      customer_tiers:
+        premium: "x-user-tier=premium"
+        standard: "x-user-tier=standard"
+        basic: "x-user-tier=basic"
+
+      # Load balancing weights
+      weights:
+        premium_customers: 1.5
+        standard_customers: 1.0
+        basic_customers: 0.8
+        mobile_traffic: 0.9
+        api_traffic: 1.2
+
+  # Performance targets
+  targets.yaml: |
+    performance_targets:
+      # Response time targets (milliseconds)
+      response_times:
+        critical_apis: 500
+        standard_apis: 1000
+        analytics_apis: 5000
+
+      # Availability targets
+      availability:
+        payment_processing: 99.95
+        reservation_system: 99.9
+        vehicle_search: 99.5
+
+      # Throughput targets (requests per second)
+      throughput:
+        max_rps_per_instance: 1000
+        target_cpu_utilization: 70
+        target_memory_utilization: 80

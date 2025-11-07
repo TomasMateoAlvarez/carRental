@@ -1,0 +1,328 @@
+# CarRental Frontend - Production Simple
+# Nginx serving React build with optimized configuration
+
+# ConfigMap for Nginx configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: nginx-config
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        # Logging format
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        # Performance optimizations
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 10m;
+
+        # Compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_types
+            text/plain
+            text/css
+            text/xml
+            text/javascript
+            application/json
+            application/javascript
+            application/xml+rss
+            application/atom+xml
+            image/svg+xml;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer-when-downgrade" always;
+        add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
+        limit_req_zone $binary_remote_addr zone=login:10m rate=3r/m;
+
+        # Upstream backend
+        upstream backend {
+            server carrental-backend-service:8083;
+        }
+
+        server {
+            listen 80;
+            server_name _;
+            root /usr/share/nginx/html;
+            index index.html;
+
+            # Rate limiting
+            limit_req zone=general burst=20 nodelay;
+
+            # Health check endpoint
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+
+            # API proxy to backend
+            location /api/ {
+                limit_req zone=general burst=10 nodelay;
+
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+
+                # Timeouts
+                proxy_connect_timeout 30s;
+                proxy_send_timeout 30s;
+                proxy_read_timeout 30s;
+
+                # Buffer settings
+                proxy_buffering on;
+                proxy_buffer_size 128k;
+                proxy_buffers 4 256k;
+                proxy_busy_buffers_size 256k;
+            }
+
+            # Authentication endpoints - stricter rate limiting
+            location /api/v1/auth/ {
+                limit_req zone=login burst=5 nodelay;
+
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # Static assets with long cache
+            location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+                expires 1y;
+                add_header Cache-Control "public, immutable";
+                add_header X-Frame-Options "SAMEORIGIN" always;
+            }
+
+            # React Router - serve index.html for all non-API routes
+            location / {
+                try_files $uri $uri/ /index.html;
+
+                # Cache policy for HTML files
+                location ~* \.html$ {
+                    expires 5m;
+                    add_header Cache-Control "public, must-revalidate";
+                }
+            }
+
+            # Security - hide server info
+            server_tokens off;
+
+            # Error pages
+            error_page 404 /index.html;
+            error_page 500 502 503 504 /50x.html;
+            location = /50x.html {
+                root /usr/share/nginx/html;
+            }
+        }
+    }
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: carrental-frontend-service
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-frontend-service
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+  selector:
+    app.kubernetes.io/name: carrental-frontend
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carrental-frontend-deployment
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: carrental-frontend
+        app.kubernetes.io/component: frontend
+        app.kubernetes.io/part-of: carrental-saas
+        version: v1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+
+        # Resource limits
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 101
+          runAsGroup: 101
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE
+
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: html-content
+          mountPath: /usr/share/nginx/html
+          readOnly: true
+        - name: nginx-cache
+          mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /var/run
+
+      # Init container to copy React build
+      initContainers:
+      - name: copy-frontend
+        image: carrental-frontend:latest  # Replace with your actual image
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Copying frontend build to shared volume..."
+          cp -r /usr/share/nginx/html/* /shared/
+          echo "Frontend files copied successfully"
+        volumeMounts:
+        - name: html-content
+          mountPath: /shared
+
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config
+      - name: html-content
+        emptyDir: {}
+      - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
+        emptyDir: {}
+
+      # Pod-level security context
+      securityContext:
+        fsGroup: 101
+
+---
+# Frontend HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: carrental-frontend-hpa
+  namespace: carrental-prod
+  labels:
+    app.kubernetes.io/name: carrental-frontend-hpa
+    app.kubernetes.io/component: autoscaling
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: carrental-frontend-deployment
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

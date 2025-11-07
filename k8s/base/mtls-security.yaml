@@ -1,0 +1,442 @@
+# mTLS Security Configuration for CarRental SaaS
+# This file configures mutual TLS between all services for enhanced security
+
+# PeerAuthentication for strict mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: carrental-mtls-strict
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  # Apply to all workloads in namespace
+  mtls:
+    mode: STRICT
+
+---
+# PeerAuthentication for istio-system namespace
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: istio-system-mtls
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: istio-system-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Destination Rule for backend service with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+
+---
+# Destination Rule for frontend service with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-frontend-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: nginx-proxy-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 32
+        maxRequestsPerConnection: 5
+
+---
+# Destination Rule for PostgreSQL with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: postgres-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: postgres-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 20
+        connectTimeout: 10s
+        keepAlive:
+          time: 3600s
+          interval: 60s
+
+---
+# Destination Rule for Redis with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: redis-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: redis-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 30
+        connectTimeout: 5s
+
+---
+# Destination Rule for Prometheus with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: prometheus-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: prometheus-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: prometheus-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 10
+        connectTimeout: 10s
+
+---
+# Destination Rule for Grafana with mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: grafana-mtls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: grafana-mtls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: grafana-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 10
+        connectTimeout: 10s
+
+---
+# Authorization Policy for backend service with mTLS
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: carrental-backend-mtls-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-mtls-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+  rules:
+  # Allow authenticated service-to-service communication
+  - from:
+    - source:
+        principals:
+        - "cluster.local/ns/carrental/sa/default"
+        - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+    to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    when:
+    - key: source.mtls_mode
+      values: ["strict"]
+
+  # Allow health checks from Kubernetes
+  - from:
+    - source:
+        principals: ["cluster.local/ns/kube-system/sa/default"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/actuator/health", "/actuator/health/*"]
+
+  # Allow metrics scraping from Prometheus
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/prometheus-service-account"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/actuator/prometheus"]
+    when:
+    - key: source.mtls_mode
+      values: ["strict"]
+
+---
+# Authorization Policy for database access
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: postgres-mtls-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres-mtls-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  rules:
+  # Only backend services can access database
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/default"]
+    to:
+    - operation:
+        ports: ["5432"]
+    when:
+    - key: source.mtls_mode
+      values: ["strict"]
+    - key: source.workload_name
+      values: ["carrental-backend-deployment"]
+
+---
+# Authorization Policy for Redis access
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: redis-mtls-authz
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis-mtls-authz
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  rules:
+  # Only backend services can access cache
+  - from:
+    - source:
+        principals: ["cluster.local/ns/carrental/sa/default"]
+    to:
+    - operation:
+        ports: ["6379"]
+    when:
+    - key: source.mtls_mode
+      values: ["strict"]
+    - key: source.workload_name
+      values: ["carrental-backend-deployment"]
+
+---
+# Service Entry for external services with TLS
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: stripe-api-tls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: stripe-api-tls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - api.stripe.com
+  ports:
+  - number: 443
+    name: https
+    protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Destination Rule for external Stripe API
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: stripe-api-dr
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: stripe-api-dr
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: api.stripe.com
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      sni: api.stripe.com
+    connectionPool:
+      tcp:
+        maxConnections: 10
+        connectTimeout: 30s
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+
+---
+# Service Entry for SMTP with TLS
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: smtp-tls
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: smtp-tls
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - smtp.gmail.com
+  ports:
+  - number: 587
+    name: smtp-tls
+    protocol: TCP
+  - number: 465
+    name: smtps
+    protocol: TCP
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Virtual Service for external traffic with security headers
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-security-vs
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-security-vs
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental.com
+  - api.carrental.com
+  gateways:
+  - carrental-gateway
+  http:
+  # Security headers for all responses
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: nginx-proxy-service
+        port:
+          number: 80
+      headers:
+        response:
+          add:
+            Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+            X-Frame-Options: "DENY"
+            X-Content-Type-Options: "nosniff"
+            X-XSS-Protection: "1; mode=block"
+            Referrer-Policy: "strict-origin-when-cross-origin"
+            Content-Security-Policy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; media-src 'self'; object-src 'none'; frame-ancestors 'none';"
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5ms
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+
+---
+# Telemetry for mTLS monitoring
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-mtls-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-mtls-metrics
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        mtls_mode:
+          operation: UPSERT
+          value: |
+            has(connection.mtls) ? (connection.mtls.mode | "unknown") : "none"
+        source_principal:
+          operation: UPSERT
+          value: |
+            source.principal | "unknown"
+        destination_principal:
+          operation: UPSERT
+          value: |
+            destination.principal | "unknown"
+
+---
+# AccessLog for security auditing
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-security-logs
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-security-logs
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessLogging:
+  - providers:
+    - name: otel
+  - filter:
+      expression: |
+        response.code >= 400 ||
+        !has(connection.mtls) ||
+        connection.mtls.mode != "strict"

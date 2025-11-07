@@ -1,0 +1,513 @@
+# Service Mesh Observability for CarRental SaaS
+# Advanced observability, tracing, and telemetry configurations
+
+# Telemetry configuration for distributed tracing
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-distributed-tracing
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-distributed-tracing
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  tracing:
+  - providers:
+    - name: jaeger
+  - customTags:
+      tenant_id:
+        header:
+          name: x-tenant-id
+      user_id:
+        header:
+          name: x-user-id
+      request_id:
+        header:
+          name: x-request-id
+      business_context:
+        header:
+          name: x-business-context
+
+---
+# Enhanced metrics collection with custom labels
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-enhanced-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-enhanced-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        # Business-specific labels
+        api_version:
+          operation: UPSERT
+          value: |
+            has(request.headers["x-api-version"]) ? request.headers["x-api-version"] : "v1"
+        tenant_id:
+          operation: UPSERT
+          value: |
+            has(request.headers["x-tenant-id"]) ? request.headers["x-tenant-id"] : "unknown"
+        user_type:
+          operation: UPSERT
+          value: |
+            has(request.headers["x-user-type"]) ? request.headers["x-user-type"] : "guest"
+        operation_type:
+          operation: UPSERT
+          value: |
+            has(request.url_path) ? (
+              request.url_path | contains("/vehicles") ? "vehicle_management" :
+              request.url_path | contains("/reservations") ? "reservation_management" :
+              request.url_path | contains("/payments") ? "payment_processing" :
+              request.url_path | contains("/auth") ? "authentication" :
+              "other"
+            ) : "unknown"
+        business_impact:
+          operation: UPSERT
+          value: |
+            has(request.url_path) ? (
+              request.url_path | contains("/payments") ? "critical" :
+              request.url_path | contains("/reservations") ? "high" :
+              request.url_path | contains("/auth") ? "high" :
+              "medium"
+            ) : "low"
+
+---
+# Access logging with business context
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: carrental-business-access-logs
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-business-access-logs
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  accessLogging:
+  - providers:
+    - name: otel
+  - filter:
+      expression: |
+        response.code >= 400 ||
+        request.url_path | contains("/payments") ||
+        request.url_path | contains("/admin") ||
+        (response.duration | duration) > duration("5s")
+
+---
+# Service Monitor for comprehensive Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: carrental-comprehensive-metrics
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-comprehensive-metrics
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: carrental-saas
+  endpoints:
+  # Backend metrics
+  - port: metrics
+    path: /actuator/prometheus
+    interval: 30s
+    scrapeTimeout: 10s
+    metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: 'carrental_.*'
+      targetLabel: service
+      replacement: 'carrental-backend'
+  # Istio sidecar metrics
+  - port: http-monitoring
+    path: /stats/prometheus
+    interval: 15s
+    scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+    - carrental
+
+---
+# PrometheusRule for business-specific alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: carrental-business-alerts
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-business-alerts
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  groups:
+  - name: carrental.business.rules
+    interval: 30s
+    rules:
+    # Business KPI alerts
+    - alert: HighPaymentFailureRate
+      expr: |
+        (
+          rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/payments.*",response_code!~"2.*"}[5m]) /
+          rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/payments.*"}[5m])
+        ) > 0.05
+      for: 2m
+      labels:
+        severity: critical
+        business_impact: revenue
+      annotations:
+        summary: "High payment failure rate detected"
+        description: "Payment failure rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+
+    - alert: ReservationSystemDown
+      expr: |
+        absent(
+          up{job=~".*carrental.*"} == 1
+        ) or
+        rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/reservations.*",response_code=~"5.*"}[5m]) > 0.1
+      for: 1m
+      labels:
+        severity: critical
+        business_impact: customer_experience
+      annotations:
+        summary: "Reservation system is experiencing issues"
+        description: "Reservation system is down or experiencing high error rates"
+
+    - alert: SlowUserAuthentication
+      expr: |
+        histogram_quantile(0.95,
+          rate(istio_request_duration_milliseconds_bucket{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/auth.*"}[5m])
+        ) > 2000
+      for: 3m
+      labels:
+        severity: warning
+        business_impact: user_experience
+      annotations:
+        summary: "User authentication is slow"
+        description: "95th percentile authentication latency is {{ $value }}ms"
+
+    - alert: HighVehicleSearchLatency
+      expr: |
+        histogram_quantile(0.90,
+          rate(istio_request_duration_milliseconds_bucket{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/vehicles.*"}[5m])
+        ) > 1000
+      for: 5m
+      labels:
+        severity: warning
+        business_impact: user_experience
+      annotations:
+        summary: "Vehicle search is experiencing high latency"
+        description: "90th percentile vehicle search latency is {{ $value }}ms"
+
+    - alert: DatabaseConnectionPoolExhaustion
+      expr: |
+        (
+          hikaricp_connections_active{instance=~".*carrental.*"} /
+          hikaricp_connections_max{instance=~".*carrental.*"}
+        ) > 0.8
+      for: 2m
+      labels:
+        severity: warning
+        business_impact: system_performance
+      annotations:
+        summary: "Database connection pool is nearly exhausted"
+        description: "Connection pool utilization is {{ $value | humanizePercentage }}"
+
+  - name: carrental.sla.rules
+    interval: 30s
+    rules:
+    # SLA monitoring
+    - record: carrental:api_success_rate
+      expr: |
+        rate(istio_requests_total{destination_service_name="carrental-backend-service",response_code!~"5.*"}[5m]) /
+        rate(istio_requests_total{destination_service_name="carrental-backend-service"}[5m])
+
+    - record: carrental:api_latency_p95
+      expr: |
+        histogram_quantile(0.95,
+          rate(istio_request_duration_milliseconds_bucket{destination_service_name="carrental-backend-service"}[5m])
+        )
+
+    - record: carrental:api_latency_p99
+      expr: |
+        histogram_quantile(0.99,
+          rate(istio_request_duration_milliseconds_bucket{destination_service_name="carrental-backend-service"}[5m])
+        )
+
+    # Business metrics
+    - record: carrental:payment_success_rate
+      expr: |
+        rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/payments.*",response_code=~"2.*"}[5m]) /
+        rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/payments.*"}[5m])
+
+    - record: carrental:reservation_rate
+      expr: |
+        rate(istio_requests_total{destination_service_name="carrental-backend-service",request_url_path=~"/api/v1/reservations",request_method="POST"}[5m])
+
+---
+# Grafana Dashboard ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carrental-grafana-dashboard
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-grafana-dashboard
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+    grafana_dashboard: "1"
+data:
+  carrental-business-metrics.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "CarRental Business Metrics",
+        "tags": ["carrental", "business", "saas"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Payment Success Rate",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "carrental:payment_success_rate",
+                "legendFormat": "Success Rate"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percentunit",
+                "min": 0,
+                "max": 1,
+                "thresholds": {
+                  "steps": [
+                    {"color": "red", "value": 0},
+                    {"color": "yellow", "value": 0.95},
+                    {"color": "green", "value": 0.99}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 2,
+            "title": "API Latency P95",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "carrental:api_latency_p95",
+                "legendFormat": "P95 Latency"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "ms",
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": 0},
+                    {"color": "yellow", "value": 500},
+                    {"color": "red", "value": 1000}
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "id": 3,
+            "title": "Request Rate by Operation",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=\"carrental-backend-service\"}[5m])) by (operation_type)",
+                "legendFormat": "{{operation_type}}"
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "title": "Error Rate by Tenant",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=\"carrental-backend-service\",response_code=~\"5.*\"}[5m])) by (tenant_id)",
+                "legendFormat": "{{tenant_id}}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+
+---
+# OpenTelemetry Collector configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: otel-collector-config
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+
+      resource:
+        attributes:
+        - key: service.namespace
+          value: carrental
+          action: upsert
+        - key: service.version
+          from_attribute: service_version
+          action: upsert
+
+      attributes:
+        actions:
+        - key: tenant.id
+          from_attribute: http.request.header.x-tenant-id
+          action: upsert
+        - key: user.id
+          from_attribute: http.request.header.x-user-id
+          action: upsert
+        - key: business.context
+          from_attribute: http.request.header.x-business-context
+          action: upsert
+
+    exporters:
+      logging:
+        loglevel: debug
+
+      jaeger:
+        endpoint: jaeger-collector.istio-system.svc.cluster.local:14250
+        tls:
+          insecure: true
+
+      prometheus:
+        endpoint: "0.0.0.0:8888"
+        namespace: carrental
+        const_labels:
+          environment: production
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [resource, attributes, batch]
+          exporters: [jaeger, logging]
+
+        metrics:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [prometheus, logging]
+
+---
+# Jaeger tracing configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-configuration
+  namespace: istio-system
+  labels:
+    app.kubernetes.io/name: jaeger-configuration
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  span-storage-type: elasticsearch
+  es-server-urls: http://elasticsearch.logging.svc.cluster.local:9200
+  es-index-prefix: carrental-traces
+  collector.zipkin.host-port: :9411
+  collector.grpc-plugin.binary: ./plugins/jaeger-grpc-plugin
+  collector.grpc-plugin.configuration-file: /plugin-config/config.yaml
+  collector.grpc-plugin.log-level: info
+
+---
+# Network policy for observability traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: observability-network-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: observability-network-policy
+    app.kubernetes.io/component: observability
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: observability
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow Prometheus scraping
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8888
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 3000
+
+  # Allow tracing data
+  - from:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 4317
+    - protocol: TCP
+      port: 4318
+    - protocol: TCP
+      port: 14250
+
+  egress:
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+
+  # Allow connections to Elasticsearch
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: logging
+    ports:
+    - protocol: TCP
+      port: 9200
+
+  # Allow connections to external observability services
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443

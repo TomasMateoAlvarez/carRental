@@ -1,0 +1,469 @@
+# GCP Cloud Integration for CarRental SaaS
+# This file contains GCP-specific configurations
+
+# GKE Ingress for External Load Balancing
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carrental-gke-ingress
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-gke-ingress
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    kubernetes.io/ingress.global-static-ip-name: "carrental-ip"
+    networking.gke.io/managed-certificates: "carrental-ssl-cert"
+    cloud.google.com/armor-config: '{"carrental-armor": "carrental-security-policy"}'
+    cloud.google.com/backend-config: '{"default": "carrental-backend-config"}'
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  rules:
+  - host: carrental.com
+    http:
+      paths:
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+  - host: www.carrental.com
+    http:
+      paths:
+      - path: /*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: nginx-proxy-service
+            port:
+              number: 80
+  - host: api.carrental.com
+    http:
+      paths:
+      - path: /api/v1/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8083
+      - path: /actuator/*
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: carrental-backend-service
+            port:
+              number: 8081
+
+---
+# GCP Managed SSL Certificate
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: carrental-ssl-cert
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-ssl-cert
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  domains:
+  - carrental.com
+  - www.carrental.com
+  - api.carrental.com
+
+---
+# GCP Backend Configuration
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: carrental-backend-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-config
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  # Health check configuration
+  healthCheck:
+    checkIntervalSec: 30
+    timeoutSec: 5
+    healthyThreshold: 2
+    unhealthyThreshold: 3
+    type: HTTP
+    requestPath: /health
+    port: 80
+
+  # Connection draining timeout
+  connectionDraining:
+    drainingTimeoutSec: 60
+
+  # Session affinity
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+    affinityCookieTtlSec: 3600
+
+  # CDN configuration
+  cdn:
+    enabled: true
+    cachePolicy:
+      includeHost: true
+      includeProtocol: true
+      includeQueryString: false
+
+  # Security headers
+  securityPolicy:
+    name: "carrental-security-policy"
+
+  # Custom request headers
+  customRequestHeaders:
+    headers:
+    - "X-Client-Region:{client_region}"
+    - "X-Client-City:{client_city}"
+
+---
+# GCP Cloud Armor Security Policy
+apiVersion: compute.cnrm.cloud.google.com/v1beta1
+kind: ComputeSecurityPolicy
+metadata:
+  name: carrental-security-policy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-security-policy
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  description: "Cloud Armor security policy for CarRental SaaS"
+
+  # Default rule (allow)
+  rule:
+  - action: "allow"
+    priority: 2147483647
+    match:
+      versionedExpr: SRC_IPS_V1
+      config:
+        srcIpRanges:
+        - "*"
+    description: "Default allow rule"
+
+  # Rate limiting rule
+  - action: "rate_based_ban"
+    priority: 1000
+    match:
+      versionedExpr: SRC_IPS_V1
+      config:
+        srcIpRanges:
+        - "*"
+    description: "Rate limiting rule"
+    rateLimitOptions:
+      conformAction: "allow"
+      exceedAction: "deny(429)"
+      enforceOnKey: "IP"
+      rateLimitThreshold:
+        count: 100
+        intervalSec: 60
+      banDurationSec: 600
+
+  # Block common attacks
+  - action: "deny(403)"
+    priority: 1001
+    match:
+      expr:
+        expression: "evaluatePreconfiguredExpr('sqli-stable')"
+    description: "Block SQL injection attacks"
+
+  - action: "deny(403)"
+    priority: 1002
+    match:
+      expr:
+        expression: "evaluatePreconfiguredExpr('xss-stable')"
+    description: "Block XSS attacks"
+
+  # Geographic restriction (optional)
+  - action: "deny(403)"
+    priority: 1003
+    match:
+      expr:
+        expression: "origin.region_code == 'CN' || origin.region_code == 'RU'"
+    description: "Block specific countries"
+
+---
+# GCP Compute Address for static IP
+apiVersion: compute.cnrm.cloud.google.com/v1beta1
+kind: ComputeAddress
+metadata:
+  name: carrental-ip
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-ip
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  description: "Static IP for CarRental SaaS"
+  addressType: "EXTERNAL"
+  location: "global"
+
+---
+# GCP Storage Classes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gcp-ssd-fast
+  labels:
+    app.kubernetes.io/name: gcp-ssd-fast
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-ssd
+  replication-type: regional-pd
+  zones: us-central1-a,us-central1-b,us-central1-c
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gcp-ssd-standard
+  labels:
+    app.kubernetes.io/name: gcp-ssd-standard
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-standard
+  replication-type: regional-pd
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# GCP Filestore for shared storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gcp-filestore
+  labels:
+    app.kubernetes.io/name: gcp-filestore
+    app.kubernetes.io/part-of: carrental-saas
+provisioner: filestore.csi.storage.gke.io
+parameters:
+  tier: "STANDARD"
+  network: "default"
+  reserved-ip-range: "10.0.0.0/29"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# GCP Secret Manager integration
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: gcp-secret-manager
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: gcp-secret-manager
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  provider:
+    gcpsm:
+      projectId: "carrental-project"  # Replace with your project ID
+      auth:
+        workloadIdentity:
+          clusterLocation: us-central1
+          clusterName: carrental-gke
+          serviceAccountRef:
+            name: external-secrets-sa
+
+---
+# External Secret for GCP Secret Manager
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: carrental-gcp-secrets
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-gcp-secrets
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  refreshInterval: 15s
+  secretStoreRef:
+    name: gcp-secret-manager
+    kind: SecretStore
+  target:
+    name: carrental-backend-secrets
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        SPRING_DATASOURCE_PASSWORD: "{{ .dbpassword }}"
+        JWT_SECRET: "{{ .jwtsecret }}"
+        STRIPE_SECRET_KEY: "{{ .stripekey }}"
+  data:
+  - secretKey: dbpassword
+    remoteRef:
+      key: carrental-db-password
+  - secretKey: jwtsecret
+    remoteRef:
+      key: carrental-jwt-secret
+  - secretKey: stripekey
+    remoteRef:
+      key: carrental-stripe-secret
+
+---
+# GKE Autopilot configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gke-autopilot-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: gke-autopilot-config
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  cluster-mode: "autopilot"
+  node-auto-provisioning: "enabled"
+  vertical-pod-autoscaling: "enabled"
+  horizontal-pod-autoscaling: "enabled"
+  network-policy: "enabled"
+  pod-security-policy: "enabled"
+
+---
+# GCP Cloud SQL Proxy configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloud-sql-proxy
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: cloud-sql-proxy
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloud-sql-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloud-sql-proxy
+        app.kubernetes.io/component: database-proxy
+        app.kubernetes.io/part-of: carrental-saas
+    spec:
+      serviceAccountName: cloud-sql-proxy-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - "--structured-logs"
+        - "--port=5432"
+        - "carrental-project:us-central1:carrental-db"  # Replace with your instance
+        ports:
+        - containerPort: 5432
+          name: postgres
+          protocol: TCP
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Cloud SQL Proxy Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: cloud-sql-proxy-service
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: cloud-sql-proxy
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+    name: postgres
+  selector:
+    app.kubernetes.io/name: cloud-sql-proxy
+
+---
+# GCP Workload Identity ServiceAccount
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-sql-proxy-sa
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: cloud-sql-proxy-sa
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    iam.gke.io/gcp-service-account: cloud-sql-proxy@carrental-project.iam.gserviceaccount.com
+
+---
+# GCP Monitoring configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gcp-monitoring-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: gcp-monitoring-config
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  project-id: "carrental-project"
+  cluster-name: "carrental-gke"
+  cluster-location: "us-central1"
+  enable-workload-metrics: "true"
+  enable-managed-prometheus: "true"
+
+---
+# GCP Binary Authorization Policy
+apiVersion: binaryauthorization.grafeas.io/v1beta1
+kind: Policy
+metadata:
+  name: carrental-binary-authorization
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-binary-authorization
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  description: "Binary Authorization policy for CarRental SaaS"
+  globalPolicyEvaluationMode: ENABLE
+  defaultAdmissionRule:
+    evaluationMode: REQUIRE_ATTESTATION
+    enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG
+    requireAttestationsBy:
+    - projects/carrental-project/attestors/prod-attestor
+  clusterAdmissionRules:
+    us-central1.carrental-gke:
+      evaluationMode: REQUIRE_ATTESTATION
+      enforcementMode: ENFORCED_BLOCK_AND_AUDIT_LOG
+      requireAttestationsBy:
+      - projects/carrental-project/attestors/prod-attestor

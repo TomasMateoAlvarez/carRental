@@ -1,0 +1,240 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carrental-backend-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  # Spring Boot Configuration
+  SPRING_PROFILES_ACTIVE: "kubernetes"
+  SERVER_PORT: "8083"
+
+  # Database Configuration
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-service:5432/carrental_db"
+  SPRING_DATASOURCE_USERNAME: "carrental"
+
+  # Redis Configuration
+  SPRING_REDIS_HOST: "redis-service"
+  SPRING_REDIS_PORT: "6379"
+
+  # JPA Configuration
+  SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+  SPRING_JPA_SHOW_SQL: "false"
+  SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
+
+  # Logging Configuration
+  LOGGING_LEVEL_ROOT: "INFO"
+  LOGGING_LEVEL_COM_EXAMPLE_CARRENTAL: "DEBUG"
+
+  # Management Endpoints
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "always"
+
+  # JWT Configuration
+  JWT_EXPIRATION: "3600000"
+
+  # Application Configuration
+  APP_NAME: "CarRental SaaS"
+  APP_VERSION: "2.0.0"
+
+  # CORS Configuration
+  CORS_ALLOWED_ORIGINS: "http://localhost:3000,https://carrental.com"
+
+  # File Upload Configuration
+  SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE: "10MB"
+  SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE: "10MB"
+
+  # Actuator Configuration
+  MANAGEMENT_SERVER_PORT: "8081"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: carrental-frontend-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  # Frontend Configuration
+  VITE_API_BASE_URL: "/api/v1"
+  VITE_APP_NAME: "CarRental Enterprise SaaS"
+  VITE_APP_VERSION: "2.0.0"
+  NODE_ENV: "production"
+
+  # API Configuration
+  VITE_API_TIMEOUT: "30000"
+  VITE_API_RETRY_ATTEMPTS: "3"
+
+  # Feature Flags
+  VITE_FEATURE_ANALYTICS: "true"
+  VITE_FEATURE_NOTIFICATIONS: "true"
+  VITE_FEATURE_MAINTENANCE: "true"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  POSTGRES_DB: "carrental_db"
+  POSTGRES_USER: "carrental"
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+
+  # PostgreSQL Configuration
+  POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+
+  # Performance Settings
+  postgres.conf: |
+    # Memory Settings
+    shared_buffers = 256MB
+    effective_cache_size = 1GB
+    work_mem = 4MB
+    maintenance_work_mem = 64MB
+
+    # Checkpoint Settings
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+
+    # Connection Settings
+    max_connections = 100
+
+    # Logging
+    log_destination = 'stderr'
+    logging_collector = on
+    log_directory = '/var/lib/postgresql/data/log'
+    log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+    log_statement = 'none'
+    log_min_duration_statement = 1000
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  redis.conf: |
+    # Network
+    bind 0.0.0.0
+    port 6379
+
+    # Memory
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+
+    # Persistence
+    save 900 1
+    save 300 10
+    save 60 10000
+
+    # Security
+    requirepass REDIS_PASSWORD_PLACEHOLDER
+
+    # Performance
+    timeout 300
+    tcp-keepalive 300
+
+    # Logging
+    loglevel notice
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: nginx
+    app.kubernetes.io/component: proxy
+    app.kubernetes.io/part-of: carrental-saas
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        sendfile on;
+        tcp_nopush on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_comp_level 6;
+        gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
+
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+        limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+
+        # Upstream backend
+        upstream backend {
+            server carrental-backend-service:8083 max_fails=3 fail_timeout=30s;
+        }
+
+        server {
+            listen 80;
+            server_name _;
+
+            # Security headers
+            add_header X-Frame-Options "SAMEORIGIN" always;
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header X-XSS-Protection "1; mode=block" always;
+
+            # API proxy
+            location /api/ {
+                limit_req zone=api burst=20 nodelay;
+                proxy_pass http://backend;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # Health check
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+
+            # Static files
+            location / {
+                root /usr/share/nginx/html;
+                index index.html;
+                try_files $uri $uri/ /index.html;
+            }
+        }
+    }

@@ -1,0 +1,684 @@
+# Intelligent Traffic Routing for CarRental SaaS
+# Advanced routing based on user location, device type, and business logic
+
+# VirtualService for intelligent frontend routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-intelligent-frontend
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-intelligent-frontend
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental.com
+  - www.carrental.com
+  gateways:
+  - carrental-gateway
+  http:
+  # Mobile traffic routing
+  - match:
+    - headers:
+        user-agent:
+          regex: ".*(Mobile|Android|iPhone|iPad).*"
+    route:
+    - destination:
+        host: nginx-proxy-service
+        subset: mobile-optimized
+      weight: 100
+    headers:
+      request:
+        add:
+          x-device-type: "mobile"
+          x-cache-strategy: "mobile-optimized"
+
+  # Geographic routing for better performance
+  - match:
+    - headers:
+        x-forwarded-for:
+          regex: "^(172\\.|10\\.|192\\.168\\.).*"  # Internal traffic
+    route:
+    - destination:
+        host: nginx-proxy-service
+        subset: internal
+      weight: 100
+    headers:
+      request:
+        add:
+          x-traffic-source: "internal"
+
+  # Premium customer routing (faster servers)
+  - match:
+    - headers:
+        x-user-tier:
+          exact: "premium"
+    route:
+    - destination:
+        host: nginx-proxy-service
+        subset: premium
+      weight: 100
+    timeout: 60s
+    retries:
+      attempts: 5
+      perTryTimeout: 15s
+
+  # High-traffic periods load balancing
+  - match:
+    - headers:
+        x-peak-hours:
+          exact: "true"
+    route:
+    - destination:
+        host: nginx-proxy-service
+        subset: standard
+      weight: 60
+    - destination:
+        host: nginx-proxy-service
+        subset: overflow
+      weight: 40
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 50ms
+
+  # Default routing
+  - route:
+    - destination:
+        host: nginx-proxy-service
+        subset: standard
+      weight: 100
+
+---
+# Destination Rules with subsets for different traffic types
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-frontend-subsets
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-frontend-subsets
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: nginx-proxy-service
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpHeaderName: "x-user-id"  # Session affinity
+  subsets:
+  - name: standard
+    labels:
+      tier: standard
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 100
+        http:
+          http1MaxPendingRequests: 32
+          maxRequestsPerConnection: 10
+
+  - name: premium
+    labels:
+      tier: premium
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 200
+        http:
+          http1MaxPendingRequests: 64
+          maxRequestsPerConnection: 20
+      outlierDetection:
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+
+  - name: mobile-optimized
+    labels:
+      optimization: mobile
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 50
+          connectTimeout: 10s
+        http:
+          http1MaxPendingRequests: 16
+          maxRequestsPerConnection: 5
+
+  - name: internal
+    labels:
+      network: internal
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 150
+        http:
+          http1MaxPendingRequests: 48
+
+  - name: overflow
+    labels:
+      tier: overflow
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 300
+        http:
+          http1MaxPendingRequests: 96
+
+---
+# VirtualService for API routing with business logic
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-api-intelligent
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-api-intelligent
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - api.carrental.com
+  gateways:
+  - carrental-gateway
+  http:
+  # Payment processing - highest priority
+  - match:
+    - uri:
+        prefix: /api/v1/payments
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: payment-processing
+      weight: 100
+    timeout: 60s
+    retries:
+      attempts: 2
+      perTryTimeout: 30s
+      retryOn: 5xx,reset,connect-failure
+    headers:
+      request:
+        add:
+          x-priority: "critical"
+          x-processing-type: "payment"
+
+  # Real-time reservation endpoints
+  - match:
+    - uri:
+        prefix: /api/v1/reservations
+      method:
+        exact: POST
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: reservation-write
+      weight: 100
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+    headers:
+      request:
+        add:
+          x-priority: "high"
+          x-operation: "reservation-create"
+
+  # Vehicle search - read-heavy, cacheable
+  - match:
+    - uri:
+        prefix: /api/v1/vehicles
+      method:
+        exact: GET
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: vehicle-read
+      weight: 100
+    timeout: 15s
+    headers:
+      request:
+        add:
+          x-cacheable: "true"
+          x-cache-ttl: "300"
+
+  # Admin operations - dedicated resources
+  - match:
+    - uri:
+        prefix: /api/v1/admin
+    - headers:
+        x-user-role:
+          exact: "ADMIN"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: admin-operations
+      weight: 100
+    timeout: 120s
+    headers:
+      request:
+        add:
+          x-priority: "admin"
+          x-resource-class: "dedicated"
+
+  # Analytics and reporting - lower priority
+  - match:
+    - uri:
+        prefix: /api/v1/analytics
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: analytics
+      weight: 100
+    timeout: 300s
+    headers:
+      request:
+        add:
+          x-priority: "low"
+          x-processing-type: "analytics"
+
+  # Default API routing
+  - route:
+    - destination:
+        host: carrental-backend-service
+        subset: standard
+      weight: 100
+    timeout: 30s
+
+---
+# Backend destination rules with specialized subsets
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-backend-intelligent
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend-intelligent
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: carrental-backend-service
+  trafficPolicy:
+    loadBalancer:
+      consistentHash:
+        httpCookie:
+          name: "session-id"
+          ttl: 3600s
+  subsets:
+  - name: payment-processing
+    labels:
+      specialization: payments
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 50
+          connectTimeout: 30s
+        http:
+          http1MaxPendingRequests: 20
+          maxRequestsPerConnection: 5
+          maxRetries: 2
+      outlierDetection:
+        consecutiveGatewayErrors: 2
+        interval: 15s
+        baseEjectionTime: 60s
+        maxEjectionPercent: 25
+
+  - name: reservation-write
+    labels:
+      operation: reservation-write
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 100
+        http:
+          http1MaxPendingRequests: 32
+          maxRequestsPerConnection: 10
+      outlierDetection:
+        consecutiveGatewayErrors: 3
+        interval: 20s
+        baseEjectionTime: 30s
+
+  - name: vehicle-read
+    labels:
+      operation: vehicle-read
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 200
+        http:
+          http1MaxPendingRequests: 64
+          maxRequestsPerConnection: 20
+      outlierDetection:
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+
+  - name: admin-operations
+    labels:
+      role: admin
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 20
+          connectTimeout: 60s
+        http:
+          http1MaxPendingRequests: 10
+          maxRequestsPerConnection: 3
+      outlierDetection:
+        consecutiveGatewayErrors: 2
+        interval: 60s
+        baseEjectionTime: 120s
+
+  - name: analytics
+    labels:
+      operation: analytics
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 30
+          connectTimeout: 120s
+        http:
+          http1MaxPendingRequests: 15
+          maxRequestsPerConnection: 2
+      outlierDetection:
+        consecutiveGatewayErrors: 10
+        interval: 60s
+        baseEjectionTime: 300s
+
+  - name: standard
+    labels:
+      tier: standard
+    trafficPolicy:
+      connectionPool:
+        tcp:
+          maxConnections: 100
+        http:
+          http1MaxPendingRequests: 32
+          maxRequestsPerConnection: 10
+
+---
+# Traffic splitting for canary deployments
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-canary-deployment
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-canary-deployment
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  # Canary testing for specific user segments
+  - match:
+    - headers:
+        x-canary-user:
+          exact: "true"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: canary
+      weight: 100
+    headers:
+      request:
+        add:
+          x-deployment-version: "canary"
+
+  # Internal testing traffic
+  - match:
+    - headers:
+        x-testing-group:
+          exact: "internal"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: canary
+      weight: 50
+    - destination:
+        host: carrental-backend-service
+        subset: stable
+      weight: 50
+
+  # Feature flag based routing
+  - match:
+    - headers:
+        x-feature-flag:
+          regex: "^(new-payment-flow|enhanced-search)$"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: feature-preview
+      weight: 100
+
+  # Progressive rollout - 5% to canary
+  - route:
+    - destination:
+        host: carrental-backend-service
+        subset: stable
+      weight: 95
+    - destination:
+        host: carrental-backend-service
+        subset: canary
+      weight: 5
+
+---
+# Geolocation-based routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-geo-routing
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-geo-routing
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  # European traffic
+  - match:
+    - headers:
+        x-country-code:
+          regex: "^(DE|FR|IT|ES|UK|NL)$"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: europe
+      weight: 100
+    headers:
+      request:
+        add:
+          x-region: "europe"
+          x-timezone: "CET"
+          x-currency: "EUR"
+
+  # North American traffic
+  - match:
+    - headers:
+        x-country-code:
+          regex: "^(US|CA|MX)$"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: americas
+      weight: 100
+    headers:
+      request:
+        add:
+          x-region: "americas"
+          x-timezone: "EST"
+          x-currency: "USD"
+
+  # Asian Pacific traffic
+  - match:
+    - headers:
+        x-country-code:
+          regex: "^(JP|AU|SG|KR)$"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: apac
+      weight: 100
+    headers:
+      request:
+        add:
+          x-region: "apac"
+          x-timezone: "JST"
+          x-currency: "JPY"
+
+  # Default routing
+  - route:
+    - destination:
+        host: carrental-backend-service
+        subset: standard
+      weight: 100
+
+---
+# Load balancing based on business hours
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: carrental-business-hours-routing
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-business-hours-routing
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  hosts:
+  - carrental-backend-service
+  http:
+  # Peak hours routing (9 AM - 5 PM)
+  - match:
+    - headers:
+        x-business-hours:
+          exact: "peak"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: peak-hours
+      weight: 100
+    timeout: 45s
+    retries:
+      attempts: 4
+      perTryTimeout: 12s
+
+  # Off-hours routing (maintenance-friendly)
+  - match:
+    - headers:
+        x-business-hours:
+          exact: "off"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: off-hours
+      weight: 100
+    timeout: 120s
+    retries:
+      attempts: 2
+      perTryTimeout: 60s
+
+  # Weekend routing
+  - match:
+    - headers:
+        x-business-hours:
+          exact: "weekend"
+    route:
+    - destination:
+        host: carrental-backend-service
+        subset: weekend
+      weight: 100
+    timeout: 60s
+
+---
+# Circuit breaker with intelligent fallback
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: carrental-intelligent-circuit-breaker
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-intelligent-circuit-breaker
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  host: "*.carrental.svc.cluster.local"
+  trafficPolicy:
+    outlierDetection:
+      # Aggressive circuit breaking for critical services
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 15s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 70
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: true
+  portLevelSettings:
+  # Payment service - strictest settings
+  - port:
+      number: 8080
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      consecutive5xxErrors: 2
+      interval: 10s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 50
+
+  # Database connections - conservative settings
+  - port:
+      number: 5432
+    connectionPool:
+      tcp:
+        maxConnections: 50
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+    outlierDetection:
+      consecutiveGatewayErrors: 2
+      interval: 30s
+      baseEjectionTime: 120s
+      maxEjectionPercent: 25
+
+---
+# Priority-based request routing
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: carrental-priority-routing
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-priority-routing
+    app.kubernetes.io/component: traffic-management
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  workloadSelector:
+    labels:
+      app.kubernetes.io/name: carrental-backend
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.priority
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.priority.v3.Priority
+          value:
+            priority_header: "x-priority"
+            priority_levels:
+              critical: 0
+              high: 1
+              normal: 2
+              low: 3
+            default_priority: "normal"

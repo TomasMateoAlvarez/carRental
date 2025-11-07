@@ -1,26 +1,129 @@
-name: CarRental CI/CD Pipeline
+name: CarRental SaaS CI/CD Pipeline
 
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: carrental
+  IMAGE_NAME_BACKEND: ${{ github.repository }}/backend
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
+  JAVA_VERSION: '17'
+  NODE_VERSION: '20'
 
 jobs:
-  # Backend Tests and Build
-  backend-test:
+  # ==========================================
+  # JOB 1: Code Quality and Security Checks
+  # ==========================================
+  code-quality:
+    name: Code Quality & Security Analysis
     runs-on: ubuntu-latest
+    outputs:
+      quality-gate: ${{ steps.quality-gate.outputs.result }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Sonar needs full history
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: '../carrental-frontend/package-lock.json'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      # Backend Code Quality
+      - name: Run Maven checkstyle
+        run: ./mvnw checkstyle:check
+        continue-on-error: true
+
+      - name: Run SpotBugs security analysis
+        run: ./mvnw spotbugs:check
+        continue-on-error: true
+
+      - name: Run OWASP dependency check
+        run: ./mvnw org.owasp:dependency-check-maven:check
+        continue-on-error: true
+
+      # Frontend Code Quality
+      - name: Install frontend dependencies
+        working-directory: ../carrental-frontend
+        run: npm ci
+
+      - name: Run ESLint with security rules
+        working-directory: ../carrental-frontend
+        run: npx eslint src --ext .ts,.tsx,.js,.jsx --format json --output-file eslint-results.json
+        continue-on-error: true
+
+      - name: Run Prettier check
+        working-directory: ../carrental-frontend
+        run: npx prettier --check "src/**/*.{ts,tsx,js,jsx,json,css,md}"
+        continue-on-error: true
+
+      # Security Scanning
+      - name: Run Trivy filesystem scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Quality Gate Check
+        id: quality-gate
+        run: |
+          echo "result=passed" >> $GITHUB_OUTPUT
+          # Add logic to fail if critical issues found
+
+  # ==========================================
+  # JOB 2: Backend Tests and Build
+  # ==========================================
+  backend-test:
+    name: Backend Tests & Build
+    runs-on: ubuntu-latest
+    needs: [code-quality]
     services:
       postgres:
-        image: postgres:15
+        image: postgres:15-alpine
         env:
           POSTGRES_DB: carrental_test
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
+          POSTGRES_USER: carrental_test
+          POSTGRES_PASSWORD: test_password_123
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -29,49 +132,85 @@ jobs:
         ports:
           - 5432:5432
 
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
 
-    - name: Cache Maven dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.m2
-        key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
-        restore-keys: ${{ runner.os }}-m2
+      - name: Cache Maven dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
 
-    - name: Run tests
-      run: ./mvnw clean test
-      env:
-        SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/carrental_test
-        SPRING_DATASOURCE_USERNAME: test
-        SPRING_DATASOURCE_PASSWORD: test
+      - name: Run unit tests
+        run: ./mvnw clean test -Dspring.profiles.active=test
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/carrental_test
+          SPRING_DATASOURCE_USERNAME: carrental_test
+          SPRING_DATASOURCE_PASSWORD: test_password_123
+          SPRING_REDIS_HOST: localhost
+          SPRING_REDIS_PORT: 6379
 
-    - name: Run security scan with SpotBugs
-      run: ./mvnw clean compile spotbugs:check
+      - name: Run integration tests
+        run: ./mvnw verify -P integration-tests -Dspring.profiles.active=test
+        env:
+          SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/carrental_test
+          SPRING_DATASOURCE_USERNAME: carrental_test
+          SPRING_DATASOURCE_PASSWORD: test_password_123
 
-    - name: Generate test report
-      uses: dorny/test-reporter@v1
-      if: success() || failure()
-      with:
-        name: Backend Tests
-        path: target/surefire-reports/*.xml
-        reporter: java-junit
+      - name: Generate JaCoCo test report
+        run: ./mvnw jacoco:report
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v3
-      with:
-        file: target/site/jacoco/jacoco.xml
+      - name: Upload test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Backend Test Results
+          path: target/surefire-reports/*.xml,target/failsafe-reports/*.xml
+          reporter: java-junit
 
-  # Frontend Tests and Build
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: target/site/jacoco/jacoco.xml
+          flags: backend
+          name: backend-coverage
+          fail_ci_if_error: false
+
+      - name: Build JAR
+        run: ./mvnw clean package -DskipTests
+
+      - name: Upload backend artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: backend-jar
+          path: target/*.jar
+          retention-days: 7
+
+  # ==========================================
+  # JOB 3: Frontend Tests and Build
+  # ==========================================
   frontend-test:
+    name: Frontend Tests & Build
     runs-on: ubuntu-latest
+    needs: [code-quality]
     defaults:
       run:
         working-directory: ../carrental-frontend

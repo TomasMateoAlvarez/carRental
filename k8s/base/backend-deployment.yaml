@@ -1,0 +1,332 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: carrental-backend-deployment
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+    app.kubernetes.io/version: "2.0.0"
+spec:
+  replicas: 3  # Multiple replicas for high availability
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: carrental-backend
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: carrental-backend
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: carrental-saas
+        app.kubernetes.io/version: "2.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/actuator/prometheus"
+        prometheus.io/port: "8081"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      imagePullSecrets:
+      - name: ghcr-secret
+      containers:
+      - name: carrental-backend
+        image: ghcr.io/your-org/carrental-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8083
+          name: http
+          protocol: TCP
+        - containerPort: 8081
+          name: management
+          protocol: TCP
+        env:
+        # Spring Boot Configuration
+        - name: SPRING_PROFILES_ACTIVE
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_PROFILES_ACTIVE
+        - name: SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SERVER_PORT
+
+        # Database Configuration
+        - name: SPRING_DATASOURCE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_DATASOURCE_URL
+        - name: SPRING_DATASOURCE_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_DATASOURCE_USERNAME
+        - name: SPRING_DATASOURCE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SPRING_DATASOURCE_PASSWORD
+
+        # Redis Configuration
+        - name: SPRING_REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_REDIS_HOST
+        - name: SPRING_REDIS_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_REDIS_PORT
+        - name: SPRING_REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SPRING_REDIS_PASSWORD
+
+        # JWT Configuration
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: JWT_SECRET
+        - name: JWT_EXPIRATION
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: JWT_EXPIRATION
+
+        # JPA Configuration
+        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_JPA_HIBERNATE_DDL_AUTO
+        - name: SPRING_JPA_SHOW_SQL
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_JPA_SHOW_SQL
+        - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
+
+        # Logging Configuration
+        - name: LOGGING_LEVEL_ROOT
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: LOGGING_LEVEL_ROOT
+        - name: LOGGING_LEVEL_COM_EXAMPLE_CARRENTAL
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: LOGGING_LEVEL_COM_EXAMPLE_CARRENTAL
+
+        # Management Configuration
+        - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+        - name: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS
+        - name: MANAGEMENT_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: MANAGEMENT_SERVER_PORT
+
+        # SMTP Configuration (Optional)
+        - name: SMTP_HOST
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SMTP_HOST
+        - name: SMTP_PORT
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SMTP_PORT
+        - name: SMTP_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SMTP_USERNAME
+        - name: SMTP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: carrental-backend-secrets
+              key: SMTP_PASSWORD
+
+        # Application Configuration
+        - name: APP_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: APP_NAME
+        - name: APP_VERSION
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: APP_VERSION
+        - name: CORS_ALLOWED_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: CORS_ALLOWED_ORIGINS
+
+        # File Upload Configuration
+        - name: SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_SERVLET_MULTIPART_MAX_FILE_SIZE
+        - name: SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: carrental-backend-config
+              key: SPRING_SERVLET_MULTIPART_MAX_REQUEST_SIZE
+
+        volumeMounts:
+        - name: app-logs
+          mountPath: /app/logs
+        - name: upload-storage
+          mountPath: /app/uploads
+
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /actuator/health/liveness
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 120  # Allow time for Spring Boot to start
+          timeoutSeconds: 10
+          periodSeconds: 30
+          successThreshold: 1
+          failureThreshold: 3
+
+        readinessProbe:
+          httpGet:
+            path: /actuator/health/readiness
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 60
+          timeoutSeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 3
+
+        # Startup probe for slow-starting containers
+        startupProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 12  # 2 minutes max startup time
+
+        # Resource limits and requests
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false  # Spring Boot needs write access
+
+      volumes:
+      - name: app-logs
+        persistentVolumeClaim:
+          claimName: app-logs-pvc
+      - name: upload-storage
+        persistentVolumeClaim:
+          claimName: uploads-pvc
+
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 60
+
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: carrental-backend-service
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/actuator/prometheus"
+    prometheus.io/port: "8081"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8083
+    targetPort: 8083
+    protocol: TCP
+    name: http
+  - port: 8081
+    targetPort: 8081
+    protocol: TCP
+    name: management
+  selector:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+
+---
+# Backend Headless Service for StatefulSet scenarios
+apiVersion: v1
+kind: Service
+metadata:
+  name: carrental-backend-headless
+  namespace: carrental
+  labels:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: carrental-saas
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - port: 8083
+    targetPort: 8083
+    protocol: TCP
+    name: http
+  - port: 8081
+    targetPort: 8081
+    protocol: TCP
+    name: management
+  selector:
+    app.kubernetes.io/name: carrental-backend
+    app.kubernetes.io/component: backend

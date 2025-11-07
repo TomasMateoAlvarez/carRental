@@ -1,0 +1,51 @@
+# Dockerfile optimizado para Render Free Tier
+FROM openjdk:17-jdk-slim AS build
+
+WORKDIR /app
+
+# Copiar archivos de Maven para cache de dependencias
+COPY pom.xml .
+COPY .mvn .mvn
+COPY mvnw .
+
+# Hacer mvnw ejecutable
+RUN chmod +x ./mvnw
+
+# Descargar dependencias (esta capa se cachea)
+RUN ./mvnw dependency:go-offline -B
+
+# Copiar código fuente
+COPY src ./src
+
+# Compilar aplicación
+RUN ./mvnw clean package -DskipTests -B
+
+# Imagen final optimizada
+FROM openjdk:17-jre-slim
+
+WORKDIR /app
+
+# Instalar curl para health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Copiar JAR desde la etapa de build
+COPY --from=build /app/target/CarRental-*.jar app.jar
+
+# Crear usuario no-root
+RUN groupadd -r carrental && useradd -r -g carrental carrental
+RUN chown -R carrental:carrental /app
+USER carrental
+
+# Variables de entorno para Render
+ENV SPRING_PROFILES_ACTIVE=render
+ENV JAVA_OPTS="-Xmx400m -Xms200m -XX:+UseContainerSupport"
+
+# Puerto
+EXPOSE ${PORT:-8080}
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8080}/actuator/health || exit 1
+
+# Comando de inicio
+CMD ["sh", "-c", "java $JAVA_OPTS -Dserver.port=${PORT:-8080} -jar app.jar"]
