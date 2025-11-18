@@ -117,7 +117,9 @@ public class JwtService {
     }
 
     private SecretKey getSignInKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+        // Clean the secret key by removing any whitespace or newline characters
+        String cleanSecretKey = secretKey.trim().replaceAll("\\s+", "");
+        byte[] keyBytes = Decoders.BASE64.decode(cleanSecretKey);
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
