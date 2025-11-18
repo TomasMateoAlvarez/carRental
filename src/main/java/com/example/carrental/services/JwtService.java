@@ -19,10 +19,10 @@ import java.util.stream.Collectors;
 @Service
 public class JwtService {
 
-    @Value("${JWT_SECRET:bXlTZWNyZXRLZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkw}")
+    @Value("${jwt.secret:bXlTZWNyZXRLZXkxMjM0NTY3ODkwMTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkw}")
     private String secretKey;
 
-    @Value("${JWT_EXPIRATION:86400000}") // 24 hours in milliseconds
+    @Value("${jwt.expiration:86400000}") // 24 hours in milliseconds
     private long jwtExpiration;
 
     @Value("${JWT_REFRESH_EXPIRATION:604800000}") // 7 days in milliseconds
