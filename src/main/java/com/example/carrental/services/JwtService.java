@@ -69,6 +69,7 @@ public class JwtService {
         extraClaims.put("roles", roles);
         extraClaims.put("authorities", authorities);
         extraClaims.put("userId", userDetails.getId());
+        extraClaims.put("organizationId", userDetails.getOrganization().getId()); // CRITICAL: Add organization ID for multi-tenancy
         extraClaims.put("email", userDetails.getEmail());
         extraClaims.put("fullName", userDetails.getFullName());
 

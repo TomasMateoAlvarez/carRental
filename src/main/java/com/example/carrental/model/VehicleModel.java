@@ -83,10 +83,10 @@ public class VehicleModel {
     @JsonManagedReference
     private List<MaintenanceRecord> maintenanceRecords;
 
-    // Multi-tenant relationship - DISABLED for core functionality
-    // @ManyToOne(fetch = FetchType.LAZY)
-    // @JoinColumn(name = "tenant_id")
-    // private Tenant tenant;
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
 
     // Business logic methods
     public boolean canChangeStatusTo(VehicleStatus newStatus) {

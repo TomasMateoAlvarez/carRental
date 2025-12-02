@@ -24,6 +24,11 @@ public class Notification {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
     @Column(name = "type", nullable = false, length = 50)
     private String type; // "MAINTENANCE_DUE", "RESERVATION_REMINDER", "VEHICLE_STATUS", "SYSTEM"
 

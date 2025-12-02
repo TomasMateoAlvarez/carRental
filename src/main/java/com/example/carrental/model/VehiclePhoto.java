@@ -24,6 +24,11 @@ public class VehiclePhoto {
     @JoinColumn(name = "vehicle_id", nullable = false)
     private VehicleModel vehicle;
 
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
     @Column(name = "photo_url", nullable = false, length = 500)
     private String photoUrl;
 

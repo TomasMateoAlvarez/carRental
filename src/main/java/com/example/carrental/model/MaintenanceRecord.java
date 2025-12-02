@@ -28,6 +28,11 @@ public class MaintenanceRecord {
     @JsonBackReference
     private VehicleModel vehicle;
 
+    // Multi-tenant relationship
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "organization_id", nullable = false)
+    private Organization organization;
+
 
     @Column(name = "maintenance_type", nullable = false, length = 100)
     private String maintenanceType; // "ROUTINE", "REPAIR", "INSPECTION", "EMERGENCY"
