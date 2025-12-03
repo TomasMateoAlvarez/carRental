@@ -4,9 +4,11 @@ import com.example.carrental.dto.CreateReservationRequestDTO;
 import com.example.carrental.dto.ReservationResponseDTO;
 import com.example.carrental.enums.ReservationStatus;
 import com.example.carrental.enums.VehicleStatus;
+import com.example.carrental.model.Customer;
 import com.example.carrental.model.Reservation;
 import com.example.carrental.model.User;
 import com.example.carrental.model.VehicleModel;
+import com.example.carrental.repository.CustomerRepository;
 import com.example.carrental.repository.ReservationRepository;
 import com.example.carrental.repository.UserRepository;
 import com.example.carrental.repository.VehicleRepository;
@@ -19,7 +21,9 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -33,6 +37,7 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final VehicleRepository vehicleRepository;
     private final UserRepository userRepository;
+    private final CustomerRepository customerRepository;
 
     public ReservationResponseDTO createReservation(CreateReservationRequestDTO request, String username) {
         log.info("Creating reservation for user: {} and vehicle: {}", username, request.getVehicleId());
@@ -53,6 +58,10 @@ public class ReservationService {
         // Get vehicle
         VehicleModel vehicle = vehicleRepository.findById(request.getVehicleId())
                 .orElseThrow(() -> new RuntimeException("Vehicle not found"));
+
+        // Get customer
+        Customer customer = customerRepository.findById(request.getCustomerId())
+                .orElseThrow(() -> new RuntimeException("Customer not found"));
 
         // Check if vehicle is available
         if (!vehicle.isAvailableForRental()) {
@@ -75,7 +84,9 @@ public class ReservationService {
         // Create reservation
         Reservation reservation = Reservation.builder()
                 .user(user)
+                .customer(customer)
                 .vehicle(vehicle)
+                .organization(user.getOrganization()) // Set organization from user
                 .startDate(request.getStartDate())
                 .endDate(request.getEndDate())
                 .pickupLocation(request.getPickupLocation())
@@ -91,11 +102,13 @@ public class ReservationService {
         // Save reservation
         reservation = reservationRepository.save(reservation);
 
-        // Update vehicle status to RESERVED
-        vehicle.setStatus(VehicleStatus.RESERVED);
-        vehicleRepository.save(vehicle);
+        // Update customer statistics
+        updateCustomerReservationStats(customer);
 
-        log.info("Reservation created successfully: {} - Vehicle {} set to RESERVED",
+        // Update vehicle status based on reservation dates
+        updateVehicleStatusBasedOnDates(vehicle, reservation);
+
+        log.info("Reservation created successfully: {} - Vehicle {} status updated based on dates",
                 reservation.getReservationCode(), vehicle.getLicensePlate());
 
         return mapToResponseDTO(reservation);
@@ -259,6 +272,15 @@ public class ReservationService {
                 .userFullName(reservation.getUser().getFullName())
                 .userEmail(reservation.getUser().getEmail());
 
+        // Add customer information if exists
+        if (reservation.getCustomer() != null) {
+            builder.customerId(reservation.getCustomer().getId())
+                    .customerCode(reservation.getCustomer().getCustomerCode())
+                    .customerFullName(reservation.getCustomer().getFullName())
+                    .customerEmail(reservation.getCustomer().getEmail())
+                    .customerPhone(reservation.getCustomer().getPhoneNumber());
+        }
+
         // Add rental information if exists
         if (reservation.getRental() != null) {
             builder.rentalId(reservation.getRental().getId())
@@ -359,5 +381,137 @@ public class ReservationService {
             default:
                 throw new RuntimeException("Unknown status: " + from);
         }
+    }
+
+    /**
+     * Update customer statistics after reservation creation or status change
+     */
+    private void updateCustomerReservationStats(Customer customer) {
+        log.debug("Updating reservation statistics for customer: {}", customer.getCustomerCode());
+
+        // Get all reservations for this customer
+        List<Reservation> customerReservations = reservationRepository.findByCustomerOrderByCreatedAtDesc(customer);
+
+        // Calculate statistics
+        int totalReservations = customerReservations.size();
+        BigDecimal totalSpent = customerReservations.stream()
+                .filter(res -> res.getStatus() == ReservationStatus.COMPLETED)
+                .map(Reservation::getTotalAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Calculate average rental days
+        double averageRentalDays = customerReservations.stream()
+                .filter(res -> res.getStatus() == ReservationStatus.COMPLETED)
+                .mapToInt(Reservation::getTotalDays)
+                .average()
+                .orElse(0.0);
+
+        // Find last rental date
+        LocalDateTime lastRentalDate = customerReservations.stream()
+                .filter(res -> res.getStatus() == ReservationStatus.COMPLETED)
+                .map(Reservation::getCreatedAt)
+                .max(LocalDateTime::compareTo)
+                .orElse(null);
+
+        // Calculate customer lifetime value (simple calculation: total spent)
+        BigDecimal customerLifetimeValue = totalSpent;
+
+        // Update customer statistics
+        customer.setTotalReservations(totalReservations);
+        customer.setTotalSpent(totalSpent);
+        customer.setAverageRentalDays(BigDecimal.valueOf(averageRentalDays));
+        customer.setLastRentalDate(lastRentalDate);
+        customer.setCustomerLifetimeValue(customerLifetimeValue);
+
+        // Update customer segment based on reservations
+        if (totalReservations == 0) {
+            customer.setSegment(com.example.carrental.enums.CustomerSegment.NEW);
+        } else if (totalReservations <= 3) {
+            customer.setSegment(com.example.carrental.enums.CustomerSegment.REGULAR);
+        } else if (totalReservations <= 10) {
+            customer.setSegment(com.example.carrental.enums.CustomerSegment.PREMIUM);
+        } else {
+            customer.setSegment(com.example.carrental.enums.CustomerSegment.VIP);
+        }
+
+        // Save updated customer
+        customerRepository.save(customer);
+
+        log.debug("Customer {} statistics updated: {} reservations, {} total spent",
+                customer.getCustomerCode(), totalReservations, totalSpent);
+    }
+
+    /**
+     * Update vehicle status based on reservation dates
+     * Only set to RESERVED if reservation is active today
+     */
+    private void updateVehicleStatusBasedOnDates(VehicleModel vehicle, Reservation reservation) {
+        LocalDate today = LocalDate.now();
+
+        // Only reserve the vehicle if the reservation starts today or is currently active
+        if (reservation.getStatus() == ReservationStatus.CONFIRMED) {
+            if (isDateInRange(today, reservation.getStartDate(), reservation.getEndDate())) {
+                vehicle.setStatus(VehicleStatus.RESERVED);
+                log.info("Vehicle {} set to RESERVED for active reservation {}",
+                    vehicle.getLicensePlate(), reservation.getReservationCode());
+            } else {
+                // Reservation is confirmed but not active yet - keep vehicle available
+                log.info("Vehicle {} kept AVAILABLE - reservation {} not yet active",
+                    vehicle.getLicensePlate(), reservation.getReservationCode());
+            }
+        } else {
+            // Pending reservation - don't block the vehicle yet
+            log.info("Vehicle {} kept AVAILABLE - reservation {} is still pending",
+                vehicle.getLicensePlate(), reservation.getReservationCode());
+        }
+
+        vehicleRepository.save(vehicle);
+    }
+
+    /**
+     * Check if a date is within a range (inclusive)
+     */
+    private boolean isDateInRange(LocalDate date, LocalDate startDate, LocalDate endDate) {
+        return !date.isBefore(startDate) && !date.isAfter(endDate);
+    }
+
+    /**
+     * Scheduled task to update vehicle statuses based on current date
+     * Should be called daily to release vehicles automatically
+     */
+    public void updateAllVehicleStatusesBasedOnDates() {
+        log.info("Starting automatic vehicle status update based on current date");
+
+        LocalDate today = LocalDate.now();
+
+        // Get all reservations that might affect vehicle status
+        List<Reservation> activeReservations = reservationRepository
+            .findActiveReservationsForStatusUpdate(today);
+
+        for (Reservation reservation : activeReservations) {
+            VehicleModel vehicle = reservation.getVehicle();
+
+            if (reservation.getStatus() == ReservationStatus.CONFIRMED) {
+                if (isDateInRange(today, reservation.getStartDate(), reservation.getEndDate())) {
+                    // Reservation is active - vehicle should be reserved
+                    if (vehicle.getStatus() != VehicleStatus.RESERVED) {
+                        vehicle.setStatus(VehicleStatus.RESERVED);
+                        vehicleRepository.save(vehicle);
+                        log.info("Vehicle {} automatically set to RESERVED for active reservation {}",
+                            vehicle.getLicensePlate(), reservation.getReservationCode());
+                    }
+                } else if (today.isAfter(reservation.getEndDate())) {
+                    // Reservation has ended - vehicle should be available
+                    if (vehicle.getStatus() == VehicleStatus.RESERVED) {
+                        vehicle.setStatus(VehicleStatus.AVAILABLE);
+                        vehicleRepository.save(vehicle);
+                        log.info("Vehicle {} automatically released to AVAILABLE - reservation {} ended",
+                            vehicle.getLicensePlate(), reservation.getReservationCode());
+                    }
+                }
+            }
+        }
+
+        log.info("Automatic vehicle status update completed");
     }
 }

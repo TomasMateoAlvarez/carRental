@@ -42,6 +42,13 @@ public class ReservationResponseDTO {
     private String userFullName;
     private String userEmail;
 
+    // Customer information
+    private Long customerId;
+    private String customerCode;
+    private String customerFullName;
+    private String customerEmail;
+    private String customerPhone;
+
     // Rental information (if exists)
     private Long rentalId;
     private String rentalCode;

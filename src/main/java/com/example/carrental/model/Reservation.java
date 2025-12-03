@@ -30,6 +30,10 @@ public class Reservation {
     private User user;
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "customer_id", nullable = true)
+    private Customer customer; // Optional link to detailed customer profile
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "vehicle_id", nullable = false)
     private VehicleModel vehicle;
 

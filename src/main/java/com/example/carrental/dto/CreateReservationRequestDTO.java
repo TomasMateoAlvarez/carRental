@@ -17,6 +17,9 @@ public class CreateReservationRequestDTO {
     @NotNull(message = "Vehicle ID is required")
     private Long vehicleId;
 
+    @NotNull(message = "Customer ID is required")
+    private Long customerId;
+
     @NotNull(message = "Start date is required")
     @FutureOrPresent(message = "Start date must be today or in the future")
     private LocalDate startDate;

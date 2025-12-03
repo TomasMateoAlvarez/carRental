@@ -218,4 +218,24 @@ public class ReservationController {
                     .body(Map.of("error", "Failed to delete reservation", "message", e.getMessage()));
         }
     }
+
+    /**
+     * Manual trigger for vehicle status updates based on dates
+     * Useful for testing the date-based vehicle availability logic
+     */
+    @PostMapping("/update-vehicle-statuses")
+    public ResponseEntity<?> updateVehicleStatuses(Authentication authentication) {
+        try {
+            log.info("Manual vehicle status update triggered by user: {}", authentication.getName());
+            reservationService.updateAllVehicleStatusesBasedOnDates();
+            return ResponseEntity.ok(Map.of(
+                "message", "Vehicle statuses updated successfully based on current date",
+                "timestamp", java.time.LocalDateTime.now()
+            ));
+        } catch (Exception e) {
+            log.error("Error updating vehicle statuses", e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to update vehicle statuses", "message", e.getMessage()));
+        }
+    }
 }

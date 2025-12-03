@@ -3,9 +3,10 @@ package com.example.carrental;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EntityScan("com.example.carrental.model")
-
+@EnableScheduling
 @SpringBootApplication
 public class CarRentalApplication {
 
